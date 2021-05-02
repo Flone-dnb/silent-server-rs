@@ -2,15 +2,75 @@ use bytevec::{ByteDecodable, ByteEncodable};
 use platform_dirs::UserDirs;
 
 use crate::global_params::*;
+use chrono::prelude::*;
 use std::fs::File;
 use std::io::prelude::*;
 use std::path::Path;
+
+pub struct ServerLogger {
+    file_handle: Option<File>,
+}
+
+impl ServerLogger {
+    pub fn new() -> Self {
+        ServerLogger { file_handle: None }
+    }
+    pub fn open(&mut self, log_file_path: &String) -> Result<(), &'static str> {
+        if Path::new(log_file_path).exists() {
+            // Remove existing (old) config file.
+            if std::fs::remove_file(log_file_path).is_err() {
+                return Err("can't remove old config file to save a new config");
+            }
+        }
+
+        let file = File::create(log_file_path);
+        if file.is_err() {
+            return Err("can't create log file");
+        }
+        self.file_handle = Some(file.unwrap());
+
+        Ok(())
+    }
+    pub fn println_and_log(&mut self, info: &str) -> Result<(), &'static str> {
+        println!("{}", info);
+
+        if self.file_handle.is_some() {
+            let now = Local::now();
+            let mut hour: String = now.hour().to_string();
+            let mut minute: String = now.minute().to_string();
+
+            if hour.len() == 1 {
+                hour = String::from("0") + &hour;
+            }
+
+            if minute.len() == 1 {
+                minute = String::from("0") + &minute;
+            }
+
+            let file = self.file_handle.as_mut().unwrap();
+            if file
+                .write_all(format!("\n[{}:{}]", hour, minute).as_bytes())
+                .is_err()
+            {
+                return Err("can't write time to log file");
+            }
+            if file.write_all(format!("{}\n", info).as_bytes()).is_err() {
+                return Err("can't write info to log file");
+            }
+
+            Ok(())
+        } else {
+            Err("no log file, 'open()' log file first")
+        }
+    }
+}
 
 #[derive(Debug)]
 pub struct ServerConfig {
     pub server_port: u16,
     pub server_password: String,
     pub config_file_path: String,
+    pub log_file_path: String,
 }
 
 impl ServerConfig {
@@ -87,6 +147,7 @@ impl ServerConfig {
             server_port: self.server_port,
             server_password: self.server_password.clone(),
             config_file_path: self.config_file_path.clone(),
+            log_file_path: self.log_file_path.clone(),
         }
     }
 
@@ -155,10 +216,15 @@ impl ServerConfig {
             server_port: SERVER_DEFAULT_PORT,
             server_password: String::from(""),
             config_file_path: ServerConfig::get_config_file_path().unwrap(),
+            log_file_path: ServerConfig::get_config_file_dir().unwrap() + LOG_FILE_NAME,
         }
     }
 
     fn get_config_file_path() -> Option<String> {
+        Some(ServerConfig::get_config_file_dir().unwrap() + CONFIG_FILE_NAME)
+    }
+
+    fn get_config_file_dir() -> Option<String> {
         let user_dirs = UserDirs::new();
         if user_dirs.is_none() {
             println!("can't read user dirs");
@@ -166,13 +232,11 @@ impl ServerConfig {
         }
         let user_dirs = user_dirs.unwrap();
 
-        let mut _config_file_path = String::new();
-        if user_dirs.document_dir.ends_with("/") || user_dirs.document_dir.ends_with("\\") {
-            _config_file_path =
-                String::from(user_dirs.document_dir.to_str().unwrap()) + CONFIG_FILE_NAME;
-        } else {
-            _config_file_path =
-                String::from(user_dirs.document_dir.to_str().unwrap()) + "/" + CONFIG_FILE_NAME;
+        let config_dir = String::from(user_dirs.document_dir.to_str().unwrap());
+
+        let mut _config_file_path = config_dir;
+        if !_config_file_path.ends_with("/") && !_config_file_path.ends_with("\\") {
+            _config_file_path += "/";
         }
 
         Some(_config_file_path)

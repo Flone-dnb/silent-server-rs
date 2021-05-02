@@ -8,6 +8,8 @@ use crate::config_io::*;
 pub struct NetService {
     pub server_config: ServerConfig,
     tokio_runtime: tokio::runtime::Runtime,
+    is_running: bool,
+    logger: ServerLogger,
 }
 
 impl NetService {
@@ -21,32 +23,52 @@ impl NetService {
         Self {
             tokio_runtime: rt.unwrap(),
             server_config: ServerConfig::new().unwrap(),
+            is_running: false,
+            logger: ServerLogger::new(),
         }
     }
 
-    pub fn start(&self) {
-        println!("\nStarting...\n");
+    pub fn start(&mut self) {
+        if self.is_running {
+            println!("\nAlready running...");
+            return;
+        }
+
+        if let Err(e) = self.logger.open(&self.server_config.log_file_path) {
+            println!("ServerLogger::open() failed, error: {}", e);
+        }
+
+        if let Err(e) = self.logger.println_and_log(&format!(
+            "\nStarting... Listening on port {} for connection requests...",
+            self.server_config.server_port
+        )) {
+            println!("ServerLogger failed, error: {}", e);
+        }
+
+        self.is_running = true;
         self.tokio_runtime
             .spawn(NetService::service(self.server_config.clone()));
     }
 
-    pub fn stop(self) {
+    pub fn stop(mut self) {
+        if let Err(e) = self.logger.println_and_log("\nStop requested...") {
+            println!("ServerLogger failed, error: {}", e);
+        }
+
         self.tokio_runtime.shutdown_timeout(Duration::from_secs(5));
+
+        println!("\nStopped.");
     }
 
     async fn service(server_config: ServerConfig) {
-        println!(
-            "\nListening on port {} for connection requests...",
-            server_config.server_port
-        );
         let listener_socket = TcpListener::bind(format!("127.0.0.1:{}", server_config.server_port))
             .await
             .unwrap();
 
         loop {
-            println!("");
-
             let accept_result = listener_socket.accept().await;
+
+            println!("");
 
             if let Err(e) = accept_result {
                 println!("listener_socket.accept() failed, err: {}", e);

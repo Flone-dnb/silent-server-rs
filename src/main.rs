@@ -25,14 +25,17 @@ fn main() {
         if input == "help" {
             println!("available commands:");
             println!("start - starts the server with the current configuration");
+            println!("stop - stops the running server");
             println!("config - show the current server configuration");
             println!("config reset - resets the config to default settings");
             println!("config.port = *value* - change server's port");
             println!("config.password = *string* - change server's password");
             println!("exit - exit the application");
-        }
-        if input == "start" {
+        } else if input == "start" {
             net_service.start();
+        } else if input == "stop" {
+            net_service.stop();
+            net_service = NetService::new();
         } else if input.contains("config") {
             if input == "config" {
                 println!("{:#?}", net_service.server_config);
