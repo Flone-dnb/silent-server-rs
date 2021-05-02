@@ -13,7 +13,6 @@ fn main() {
     let mut net_service = NetService::new();
 
     loop {
-        print!(">");
         io::stdout().flush().ok().expect("could not flush stdout");
         let mut input = String::new();
         io::stdin()

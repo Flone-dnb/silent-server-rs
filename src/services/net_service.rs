@@ -1,6 +1,7 @@
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::config_io::*;
@@ -9,7 +10,7 @@ pub struct NetService {
     pub server_config: ServerConfig,
     tokio_runtime: tokio::runtime::Runtime,
     is_running: bool,
-    logger: ServerLogger,
+    logger: Arc<Mutex<ServerLogger>>,
 }
 
 impl NetService {
@@ -24,7 +25,7 @@ impl NetService {
             tokio_runtime: rt.unwrap(),
             server_config: ServerConfig::new().unwrap(),
             is_running: false,
-            logger: ServerLogger::new(),
+            logger: Arc::new(Mutex::new(ServerLogger::new())),
         }
     }
 
@@ -34,11 +35,13 @@ impl NetService {
             return;
         }
 
-        if let Err(e) = self.logger.open(&self.server_config.log_file_path) {
+        let mut logger_guard = self.logger.lock().unwrap();
+
+        if let Err(e) = logger_guard.open(&self.server_config.log_file_path) {
             println!("ServerLogger::open() failed, error: {}", e);
         }
 
-        if let Err(e) = self.logger.println_and_log(&format!(
+        if let Err(e) = logger_guard.println_and_log(&format!(
             "\nStarting... Listening on port {} for connection requests...",
             self.server_config.server_port
         )) {
@@ -46,12 +49,15 @@ impl NetService {
         }
 
         self.is_running = true;
-        self.tokio_runtime
-            .spawn(NetService::service(self.server_config.clone()));
+        self.tokio_runtime.spawn(NetService::service(
+            self.server_config.clone(),
+            Arc::clone(&self.logger),
+        ));
     }
 
-    pub fn stop(mut self) {
-        if let Err(e) = self.logger.println_and_log("\nStop requested...") {
+    pub fn stop(self) {
+        let mut logger_guard = self.logger.as_ref().lock().unwrap();
+        if let Err(e) = logger_guard.println_and_log("\nStop requested...") {
             println!("ServerLogger failed, error: {}", e);
         }
 
@@ -60,7 +66,7 @@ impl NetService {
         println!("\nStopped.");
     }
 
-    async fn service(server_config: ServerConfig) {
+    async fn service(server_config: ServerConfig, logger: Arc<Mutex<ServerLogger>>) {
         let listener_socket = TcpListener::bind(format!("127.0.0.1:{}", server_config.server_port))
             .await
             .unwrap();
@@ -76,7 +82,11 @@ impl NetService {
             }
 
             let (mut socket, addr) = accept_result.unwrap();
-            println!("new connection from {:?}", addr);
+            let mut logger_guard = logger.lock().unwrap();
+            if let Err(e) = logger_guard.println_and_log(&format!("New connection from {:?}", addr))
+            {
+                println!("ServerLogger failed, error: {}", e);
+            }
 
             tokio::spawn(async move {
                 let mut buf = [0; 2];
