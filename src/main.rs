@@ -3,18 +3,14 @@ use std::io::*;
 
 mod config_io;
 mod global_params;
-use config_io::*;
+mod services;
+use services::net_service::*;
 
 fn main() {
     println!("Silent Server v{} (rs).\n", env!("CARGO_PKG_VERSION"));
     println!("Type 'help' to see commands...\n");
 
-    let server_config = ServerConfig::new();
-    if server_config.is_none() {
-        pause();
-        panic!();
-    }
-    let mut server_config = server_config.unwrap();
+    let mut net_service = NetService::new();
 
     loop {
         print!(">");
@@ -28,17 +24,21 @@ fn main() {
 
         if input == "help" {
             println!("available commands:");
-            println!("config - show current server configuration");
+            println!("start - starts the server with the current configuration");
+            println!("config - show the current server configuration");
             println!("config reset - resets the config to default settings");
-            println!("config.port = *value* - change server port");
-            println!("config.password = *string* - change server password");
-            println!("exit - exit application");
+            println!("config.port = *value* - change server's port");
+            println!("config.password = *string* - change server's password");
+            println!("exit - exit the application");
+        }
+        if input == "start" {
+            net_service.start();
         } else if input.contains("config") {
             if input == "config" {
-                println!("{:#?}", server_config);
+                println!("{:#?}", net_service.server_config);
             } else if input == "config reset" {
-                server_config = server_config.reset_config();
-                server_config.save_config().unwrap();
+                net_service.server_config = net_service.server_config.reset_config();
+                net_service.server_config.save_config().unwrap();
             } else if input.contains("config.port = ") {
                 let port_str: String = input
                     .chars()
@@ -53,8 +53,8 @@ fn main() {
                         std::u16::MAX
                     );
                 } else {
-                    server_config.server_port = port_u16.unwrap();
-                    server_config.save_config().unwrap();
+                    net_service.server_config.server_port = port_u16.unwrap();
+                    net_service.server_config.save_config().unwrap();
                 }
             } else if input.contains("config.password = ") {
                 let password_str: String = input
@@ -62,12 +62,13 @@ fn main() {
                     .take(0)
                     .chain(input.chars().skip("config.password = ".chars().count()))
                     .collect();
-                server_config.server_password = password_str;
-                server_config.save_config().unwrap();
+                net_service.server_config.server_password = password_str;
+                net_service.server_config.save_config().unwrap();
             } else {
                 println!("command '{}' not found", input);
             }
         } else if input == "exit" {
+            net_service.stop();
             break;
         } else {
             println!("command '{}' not found", input);
@@ -77,7 +78,7 @@ fn main() {
     }
 }
 
-pub fn pause() {
+fn pause() {
     use std::io::prelude::*;
 
     let mut stdin = std::io::stdin();

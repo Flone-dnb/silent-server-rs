@@ -82,6 +82,14 @@ impl ServerConfig {
         }
     }
 
+    pub fn clone(&self) -> ServerConfig {
+        ServerConfig {
+            server_port: self.server_port,
+            server_password: self.server_password.clone(),
+            config_file_path: self.config_file_path.clone(),
+        }
+    }
+
     pub fn reset_config(&mut self) -> Self {
         ServerConfig::default()
     }
