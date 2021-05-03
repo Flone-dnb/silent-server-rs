@@ -1,3 +1,5 @@
+#![feature(linked_list_remove)]
+
 use std::io;
 use std::io::*;
 
@@ -78,18 +80,4 @@ fn main() {
 
         println!("");
     }
-}
-
-fn pause() {
-    use std::io::prelude::*;
-
-    let mut stdin = std::io::stdin();
-    let mut stdout = std::io::stdout();
-
-    // We want the cursor to stay at the end of the line, so we print without a newline and flush manually.
-    write!(stdout, "Press Enter to continue...").unwrap();
-    stdout.flush().unwrap();
-
-    // Read a single byte and discard
-    let _ = stdin.read(&mut [0u8]).unwrap();
 }
