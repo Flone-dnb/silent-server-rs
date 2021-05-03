@@ -4,4 +4,4 @@ Must be used with the [Silent Client](https://github.com/Flone-dnb/silent-rs) ap
 <br>
 This project is at an early stage of development. 
 # Build
-Use 'cargo build --release' to build the app.
+Use 'cargo build --release' (requires Rust nightly) to build the app.
