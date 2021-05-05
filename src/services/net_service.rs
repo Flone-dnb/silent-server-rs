@@ -90,9 +90,14 @@ impl NetService {
         logger: Arc<Mutex<ServerLogger>>,
         users: Arc<Mutex<LinkedList<UserInfo>>>,
     ) {
-        let listener_socket = TcpListener::bind(format!("127.0.0.1:{}", server_config.server_port))
-            .await
-            .unwrap();
+        let listener_socket =
+            TcpListener::bind(format!("127.0.0.1:{}", server_config.server_port)).await;
+
+        if listener_socket.is_err() {
+            println!("listener_socket.accept() failed.");
+            return;
+        }
+        let listener_socket = listener_socket.unwrap();
 
         loop {
             let accept_result = listener_socket.accept().await;
@@ -138,16 +143,16 @@ impl NetService {
                 .read_from_socket(&mut socket, &addr, &mut buf_u16)
                 .await
             {
-                ReadResult::FIN => {
+                IoResult::FIN => {
                     is_error = false;
                     break;
                 }
-                ReadResult::WouldBlock => continue,
-                ReadResult::Err(e) => {
+                IoResult::WouldBlock => continue,
+                IoResult::Err(e) => {
                     println!("read_from_socket() failed, error: {}", e);
                     break;
                 }
-                ReadResult::Ok(_bytes) => {
+                IoResult::Ok(_bytes) => {
                     let res = u16::decode::<u16>(&buf_u16);
                     if res.is_err() {
                         println!("socket ({}) decode(u16) failed", addr);
@@ -163,15 +168,21 @@ impl NetService {
 
             // Using current state and these 2 bytes we know what to do.
             match user_net_service
-                .handle_user_state(_var_u16, &mut socket, &addr, &mut user_info)
+                .handle_user_state(
+                    _var_u16,
+                    &mut socket,
+                    &addr,
+                    &mut user_info,
+                    Arc::clone(&users),
+                )
                 .await
             {
                 HandleStateResult::ReadErr(read_e) => match read_e {
-                    ReadResult::FIN => {
+                    IoResult::FIN => {
                         is_error = false;
                         break;
                     }
-                    ReadResult::Err(e) => {
+                    IoResult::Err(e) => {
                         println!(
                             "handle_user_state().read_from_socket() failed, error: {}",
                             e
@@ -184,6 +195,13 @@ impl NetService {
                     println!("handle_user_state() failed, error: {}", msg);
                     break;
                 }
+                HandleStateResult::ErrInfo(msg) => {
+                    println!(
+                        "handle_user_state() returned status on socket ({}): {}",
+                        addr, msg
+                    );
+                    break;
+                }
                 _ => {}
             };
 
@@ -193,14 +211,16 @@ impl NetService {
                     && user_net_service.user_state == UserState::Connected
                 {
                     // New connected user.
+                    let mut _users_connected = 0;
                     let mut users_guard = users.lock().unwrap();
                     users_guard.push_back(user_info.clone());
+                    _users_connected = users_guard.len();
                     drop(users_guard);
 
                     let mut logger_guard = logger.lock().unwrap();
                     if let Err(e) = logger_guard.println_and_log(&format!(
-                        "New connection from ({:?}) AKA ({}).",
-                        addr, user_info.username
+                        "New connection from ({:?}) AKA ({}) [connected users: {}].",
+                        addr, user_info.username, _users_connected
                     )) {
                         println!("ServerLogger failed, error: {}", e);
                     }
@@ -208,38 +228,46 @@ impl NetService {
             }
         }
 
-        // Erase from global users list.
-        let mut users_guard = users.lock().unwrap();
-        for (i, user) in users_guard.iter().enumerate() {
-            if user.username == user_info.username {
-                users_guard.remove(i);
-                break;
-            }
-        }
-        drop(users_guard);
-
-        // Show output.
         let mut _out_str = String::from("");
 
-        if is_error {
-            if user_info.username != "" {
+        if user_net_service.user_state == UserState::Connected {
+            // Erase from global users list.
+            let mut _users_connected = 0;
+            let mut users_guard = users.lock().unwrap();
+            for (i, user) in users_guard.iter().enumerate() {
+                if user.username == user_info.username {
+                    users_guard.remove(i);
+                    _users_connected = users_guard.len();
+                    break;
+                }
+            }
+
+            if is_error {
                 _out_str = format!(
-                    "Closing connection with socket ({}) AKA ({}) due to error.",
-                    user_info.tcp_addr, user_info.username
+                    "Closing connection with socket ({}) AKA ({}) due to error [connected users: {}].",
+                    user_info.tcp_addr, user_info.username, _users_connected
                 );
             } else {
                 _out_str = format!(
-                    "Closing connection with socket ({}) due to error.",
-                    user_info.tcp_addr
+                    "Closing connection with socket ({}) AKA ({}) in response to FIN [connected users: {}].",
+                    user_info.tcp_addr, user_info.username, _users_connected
                 );
             }
         } else {
-            _out_str = format!(
-                "Closing connection with socket ({}) AKA ({}) in response to FIN.",
-                user_info.tcp_addr, user_info.username
-            );
+            if is_error {
+                _out_str = format!(
+                    "Closing connection with socket ({}) due to error (this user was not connected).",
+                    user_info.tcp_addr,
+                );
+            } else {
+                _out_str = format!(
+                    "Closing connection with socket ({}) AKA ({}) in response to FIN (this user was not connected).",
+                    user_info.tcp_addr, user_info.username,
+                );
+            }
         }
 
+        // Show output.
         let mut logger_guard = logger.lock().unwrap();
         if let Err(e) = logger_guard.println_and_log(&_out_str) {
             println!("ServerLogger failed, error: {}", e);
