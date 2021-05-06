@@ -1,5 +1,6 @@
 use bytevec::{ByteDecodable, ByteEncodable};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::RwLock;
 
 use std::collections::LinkedList;
 use std::net::SocketAddr;
@@ -14,7 +15,7 @@ pub struct UserInfo {
     tcp_addr: SocketAddr,
 }
 impl UserInfo {
-    fn clone(&self) -> UserInfo {
+    pub fn clone(&self) -> UserInfo {
         UserInfo {
             username: self.username.clone(),
             tcp_addr: self.tcp_addr.clone(),
@@ -26,6 +27,7 @@ pub struct NetService {
     pub server_config: ServerConfig,
     connected_users: Arc<Mutex<LinkedList<UserInfo>>>,
     logger: Arc<Mutex<ServerLogger>>,
+    user_enters_server_lock: Arc<RwLock<()>>,
     tokio_runtime: tokio::runtime::Runtime,
     is_running: bool,
 }
@@ -43,6 +45,7 @@ impl NetService {
             server_config: ServerConfig::new().unwrap(),
             is_running: false,
             connected_users: Arc::new(Mutex::new(LinkedList::new())),
+            user_enters_server_lock: Arc::new(RwLock::new(())),
             logger: Arc::new(Mutex::new(ServerLogger::new())),
         }
     }
@@ -71,6 +74,7 @@ impl NetService {
             self.server_config.clone(),
             Arc::clone(&self.logger),
             Arc::clone(&self.connected_users),
+            Arc::clone(&self.user_enters_server_lock),
         ));
     }
 
@@ -89,6 +93,7 @@ impl NetService {
         server_config: ServerConfig,
         logger: Arc<Mutex<ServerLogger>>,
         users: Arc<Mutex<LinkedList<UserInfo>>>,
+        user_enters_server_lock: Arc<RwLock<()>>,
     ) {
         let listener_socket =
             TcpListener::bind(format!("127.0.0.1:{}", server_config.server_port)).await;
@@ -116,6 +121,7 @@ impl NetService {
                 addr,
                 Arc::clone(&logger),
                 Arc::clone(&users),
+                Arc::clone(&user_enters_server_lock),
             ));
         }
     }
@@ -125,12 +131,12 @@ impl NetService {
         addr: SocketAddr,
         logger: Arc<Mutex<ServerLogger>>,
         users: Arc<Mutex<LinkedList<UserInfo>>>,
+        user_enters_server_lock: Arc<RwLock<()>>,
     ) {
         let mut buf_u16 = [0u8; 2];
         let mut _var_u16 = 0u16;
         let mut is_error = true;
         let mut user_net_service = UserNetService::new();
-        let mut _prev_user_state = user_net_service.user_state;
         let mut user_info = UserInfo {
             username: String::from(""),
             tcp_addr: addr,
@@ -163,9 +169,6 @@ impl NetService {
                 }
             }
 
-            // Save current state.
-            _prev_user_state = user_net_service.user_state;
-
             // Using current state and these 2 bytes we know what to do.
             match user_net_service
                 .handle_user_state(
@@ -174,6 +177,8 @@ impl NetService {
                     &addr,
                     &mut user_info,
                     Arc::clone(&users),
+                    Arc::clone(&user_enters_server_lock),
+                    Arc::clone(&logger),
                 )
                 .await
             {
@@ -204,28 +209,6 @@ impl NetService {
                 }
                 _ => {}
             };
-
-            // See if state is changed.
-            if _prev_user_state != user_net_service.user_state {
-                if _prev_user_state == UserState::NotConnected
-                    && user_net_service.user_state == UserState::Connected
-                {
-                    // New connected user.
-                    let mut _users_connected = 0;
-                    let mut users_guard = users.lock().unwrap();
-                    users_guard.push_back(user_info.clone());
-                    _users_connected = users_guard.len();
-                    drop(users_guard);
-
-                    let mut logger_guard = logger.lock().unwrap();
-                    if let Err(e) = logger_guard.println_and_log(&format!(
-                        "New connection from ({:?}) AKA ({}) [connected users: {}].",
-                        addr, user_info.username, _users_connected
-                    )) {
-                        println!("ServerLogger failed, error: {}", e);
-                    }
-                }
-            }
         }
 
         let mut _out_str = String::from("");
