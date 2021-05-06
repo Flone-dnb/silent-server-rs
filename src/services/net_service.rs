@@ -1,18 +1,18 @@
-use bytevec::{ByteDecodable, ByteEncodable};
-use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::RwLock;
+use bytevec::ByteDecodable;
 
 use std::collections::LinkedList;
-use std::net::SocketAddr;
+use std::net::*;
 use std::sync::{Arc, Mutex};
+use std::thread;
 use std::time::Duration;
 
 use super::user_net_service::*;
 use crate::config_io::*;
+use crate::global_params::*;
 
 pub struct UserInfo {
     pub username: String,
-    tcp_addr: SocketAddr,
+    pub tcp_addr: SocketAddr,
 }
 impl UserInfo {
     pub fn clone(&self) -> UserInfo {
@@ -27,25 +27,17 @@ pub struct NetService {
     pub server_config: ServerConfig,
     connected_users: Arc<Mutex<LinkedList<UserInfo>>>,
     logger: Arc<Mutex<ServerLogger>>,
-    user_enters_server_lock: Arc<RwLock<()>>,
-    tokio_runtime: tokio::runtime::Runtime,
+    user_enters_leaves_server_lock: Arc<Mutex<()>>,
     is_running: bool,
 }
 
 impl NetService {
     pub fn new() -> Self {
-        let rt = tokio::runtime::Runtime::new();
-        if rt.is_err() {
-            println!("can't start Tokio runtime");
-            panic!();
-        }
-
         Self {
-            tokio_runtime: rt.unwrap(),
             server_config: ServerConfig::new().unwrap(),
             is_running: false,
             connected_users: Arc::new(Mutex::new(LinkedList::new())),
-            user_enters_server_lock: Arc::new(RwLock::new(())),
+            user_enters_leaves_server_lock: Arc::new(Mutex::new(())),
             logger: Arc::new(Mutex::new(ServerLogger::new())),
         }
     }
@@ -70,33 +62,28 @@ impl NetService {
         }
 
         self.is_running = true;
-        self.tokio_runtime.spawn(NetService::service(
-            self.server_config.clone(),
-            Arc::clone(&self.logger),
-            Arc::clone(&self.connected_users),
-            Arc::clone(&self.user_enters_server_lock),
-        ));
+
+        let server_config_copy = self.server_config.clone();
+        let logger_copy = Arc::clone(&self.logger);
+        let users_copy = Arc::clone(&self.connected_users);
+        let user_io_lock_copy = Arc::clone(&self.user_enters_leaves_server_lock);
+        thread::spawn(move || {
+            NetService::service(
+                server_config_copy,
+                logger_copy,
+                users_copy,
+                user_io_lock_copy,
+            )
+        });
     }
 
-    pub fn stop(self) {
-        let mut logger_guard = self.logger.as_ref().lock().unwrap();
-        if let Err(e) = logger_guard.println_and_log("\nStop requested...") {
-            println!("ServerLogger failed, error: {}", e);
-        }
-
-        self.tokio_runtime.shutdown_timeout(Duration::from_secs(5));
-
-        println!("\nStopped.");
-    }
-
-    async fn service(
+    fn service(
         server_config: ServerConfig,
         logger: Arc<Mutex<ServerLogger>>,
         users: Arc<Mutex<LinkedList<UserInfo>>>,
-        user_enters_server_lock: Arc<RwLock<()>>,
+        user_enters_leaves_server_lock: Arc<Mutex<()>>,
     ) {
-        let listener_socket =
-            TcpListener::bind(format!("127.0.0.1:{}", server_config.server_port)).await;
+        let listener_socket = TcpListener::bind(format!("127.0.0.1:{}", server_config.server_port));
 
         if listener_socket.is_err() {
             println!("listener_socket.accept() failed.");
@@ -105,9 +92,7 @@ impl NetService {
         let listener_socket = listener_socket.unwrap();
 
         loop {
-            let accept_result = listener_socket.accept().await;
-
-            println!("");
+            let accept_result = listener_socket.accept();
 
             if let Err(e) = accept_result {
                 println!("listener_socket.accept() failed, err: {}", e);
@@ -115,23 +100,30 @@ impl NetService {
             }
 
             let (socket, addr) = accept_result.unwrap();
+            if socket.set_nodelay(true).is_err() {
+                println!("socket.set_nodelay() failed on addr ({}).", addr);
+                continue;
+            }
+            if socket.set_nonblocking(true).is_err() {
+                println!("socket.set_nonblocking() failed on addr ({}).", addr);
+                continue;
+            }
 
-            tokio::spawn(NetService::handle_user(
-                socket,
-                addr,
-                Arc::clone(&logger),
-                Arc::clone(&users),
-                Arc::clone(&user_enters_server_lock),
-            ));
+            let logger_copy = Arc::clone(&logger);
+            let users_copy = Arc::clone(&users);
+            let user_io_lock_copy = Arc::clone(&user_enters_leaves_server_lock);
+            thread::spawn(move || {
+                NetService::handle_user(socket, addr, logger_copy, users_copy, user_io_lock_copy)
+            });
         }
     }
 
-    async fn handle_user(
+    fn handle_user(
         mut socket: TcpStream,
         addr: SocketAddr,
         logger: Arc<Mutex<ServerLogger>>,
         users: Arc<Mutex<LinkedList<UserInfo>>>,
-        user_enters_server_lock: Arc<RwLock<()>>,
+        user_enters_leaves_server_lock: Arc<Mutex<()>>,
     ) {
         let mut buf_u16 = [0u8; 2];
         let mut _var_u16 = 0u16;
@@ -145,15 +137,15 @@ impl NetService {
         // Read data from the socket.
         loop {
             // Read 2 bytes.
-            match user_net_service
-                .read_from_socket(&mut socket, &addr, &mut buf_u16)
-                .await
-            {
+            match user_net_service.read_from_socket(&mut socket, &addr, &mut buf_u16) {
                 IoResult::FIN => {
                     is_error = false;
                     break;
                 }
-                IoResult::WouldBlock => continue,
+                IoResult::WouldBlock => {
+                    thread::sleep(Duration::from_millis(INTERVAL_TCP_MESSAGE_MS));
+                    continue;
+                }
                 IoResult::Err(e) => {
                     println!("read_from_socket() failed, error: {}", e);
                     break;
@@ -170,18 +162,15 @@ impl NetService {
             }
 
             // Using current state and these 2 bytes we know what to do.
-            match user_net_service
-                .handle_user_state(
-                    _var_u16,
-                    &mut socket,
-                    &addr,
-                    &mut user_info,
-                    Arc::clone(&users),
-                    Arc::clone(&user_enters_server_lock),
-                    Arc::clone(&logger),
-                )
-                .await
-            {
+            match user_net_service.handle_user_state(
+                _var_u16,
+                &mut socket,
+                &addr,
+                &mut user_info,
+                Arc::clone(&users),
+                Arc::clone(&user_enters_leaves_server_lock),
+                Arc::clone(&logger),
+            ) {
                 HandleStateResult::ReadErr(read_e) => match read_e {
                     IoResult::FIN => {
                         is_error = false;
@@ -214,14 +203,18 @@ impl NetService {
         let mut _out_str = String::from("");
 
         if user_net_service.user_state == UserState::Connected {
-            // Erase from global users list.
             let mut _users_connected = 0;
-            let mut users_guard = users.lock().unwrap();
-            for (i, user) in users_guard.iter().enumerate() {
-                if user.username == user_info.username {
-                    users_guard.remove(i);
-                    _users_connected = users_guard.len();
-                    break;
+            {
+                let _guard = user_enters_leaves_server_lock.lock().unwrap();
+
+                // Erase from global users list.
+                let mut users_guard = users.lock().unwrap();
+                for (i, user) in users_guard.iter().enumerate() {
+                    if user.username == user_info.username {
+                        users_guard.remove(i);
+                        _users_connected = users_guard.len();
+                        break;
+                    }
                 }
             }
 
