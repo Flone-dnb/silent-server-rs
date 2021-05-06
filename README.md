@@ -1,5 +1,5 @@
 # Silent
-Silent Server is a cross-platform command-line tool for hosting Silent VOIP Server.
+Silent Server is a cross-platform command-line tool for hosting Silent VOIP Server.<br>
 Must be used with the [Silent Client](https://github.com/Flone-dnb/silent-rs) application. 
 <br>
 This project is at an early stage of development.
