@@ -168,7 +168,7 @@ impl UserNetService {
         loop {
             match self.read_from_socket(socket, addr, &mut client_version_buf) {
                 IoResult::WouldBlock => {
-                    thread::sleep(Duration::from_millis(INTERVAL_TCP_MESSAGE_MS));
+                    thread::sleep(Duration::from_millis(INTERVAL_TCP_CONNECT_MS));
                     continue;
                 }
                 IoResult::Ok(_bytes) => {
@@ -194,7 +194,7 @@ impl UserNetService {
         loop {
             match self.read_from_socket(socket, &addr, &mut client_name_size_buf) {
                 IoResult::WouldBlock => {
-                    thread::sleep(Duration::from_millis(INTERVAL_TCP_MESSAGE_MS));
+                    thread::sleep(Duration::from_millis(INTERVAL_TCP_CONNECT_MS));
                     continue;
                 }
                 IoResult::Ok(_bytes) => {
@@ -220,7 +220,7 @@ impl UserNetService {
         loop {
             match self.read_from_socket(socket, addr, &mut client_name_buf) {
                 IoResult::WouldBlock => {
-                    thread::sleep(Duration::from_millis(INTERVAL_TCP_MESSAGE_MS));
+                    thread::sleep(Duration::from_millis(INTERVAL_TCP_CONNECT_MS));
                     continue;
                 }
                 IoResult::Ok(_bytes) => {
@@ -286,7 +286,7 @@ impl UserNetService {
             loop {
                 match self.write_to_socket(socket, &addr, &mut answer_buf) {
                     IoResult::WouldBlock => {
-                        thread::sleep(Duration::from_millis(INTERVAL_TCP_MESSAGE_MS));
+                        thread::sleep(Duration::from_millis(INTERVAL_TCP_CONNECT_MS));
                         continue;
                     }
                     IoResult::Ok(_bytes) => {
@@ -310,7 +310,7 @@ impl UserNetService {
                 loop {
                     match self.write_to_socket(socket, &addr, &mut answer_buf) {
                         IoResult::WouldBlock => {
-                            thread::sleep(Duration::from_millis(INTERVAL_TCP_MESSAGE_MS));
+                            thread::sleep(Duration::from_millis(INTERVAL_TCP_CONNECT_MS));
                             continue;
                         }
                         IoResult::Ok(_bytes) => {
@@ -324,7 +324,7 @@ impl UserNetService {
                 loop {
                     match self.write_to_socket(socket, &addr, &mut supported_client_str) {
                         IoResult::WouldBlock => {
-                            thread::sleep(Duration::from_millis(INTERVAL_TCP_MESSAGE_MS));
+                            thread::sleep(Duration::from_millis(INTERVAL_TCP_CONNECT_MS));
                             continue;
                         }
                         IoResult::Ok(_bytes) => {
@@ -387,7 +387,7 @@ impl UserNetService {
             loop {
                 match self.write_to_socket(socket, &addr, &mut info_out_buf) {
                     IoResult::WouldBlock => {
-                        thread::sleep(Duration::from_millis(INTERVAL_TCP_MESSAGE_MS));
+                        thread::sleep(Duration::from_millis(INTERVAL_TCP_CONNECT_MS));
                         continue;
                     }
                     IoResult::Ok(_) => {
