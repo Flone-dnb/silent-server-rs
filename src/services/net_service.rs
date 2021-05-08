@@ -13,13 +13,22 @@ use crate::global_params::*;
 pub struct UserInfo {
     pub username: String,
     pub tcp_addr: SocketAddr,
+    pub tcp_socket: TcpStream,
+    pub tcp_io_mutex: Arc<Mutex<()>>,
 }
 impl UserInfo {
-    pub fn clone(&self) -> UserInfo {
-        UserInfo {
+    pub fn clone(&self) -> Option<UserInfo> {
+        let tcp_socket_clone = self.tcp_socket.try_clone();
+        if tcp_socket_clone.is_err() {
+            println!("UserInfo::clone() failed at tcp_socket.try_clone().");
+            return None;
+        }
+        Some(UserInfo {
             username: self.username.clone(),
             tcp_addr: self.tcp_addr.clone(),
-        }
+            tcp_socket: tcp_socket_clone.unwrap(),
+            tcp_io_mutex: Arc::clone(&self.tcp_io_mutex),
+        })
     }
 }
 
@@ -129,7 +138,7 @@ impl NetService {
     }
 
     fn handle_user(
-        mut socket: TcpStream,
+        socket: TcpStream,
         addr: SocketAddr,
         logger: Arc<Mutex<ServerLogger>>,
         users: Arc<Mutex<LinkedList<UserInfo>>>,
@@ -139,15 +148,22 @@ impl NetService {
         let mut _var_u16 = 0u16;
         let mut is_error = true;
         let mut user_net_service = UserNetService::new();
+
         let mut user_info = UserInfo {
             username: String::from(""),
             tcp_addr: addr,
+            tcp_socket: socket,
+            tcp_io_mutex: Arc::new(Mutex::new(())),
         };
 
         // Read data from the socket.
         loop {
             // Read 2 bytes.
-            match user_net_service.read_from_socket(&mut socket, &addr, &mut buf_u16) {
+            match user_net_service.read_from_socket(
+                &mut user_info.tcp_socket,
+                &user_info.tcp_addr,
+                &mut buf_u16,
+            ) {
                 IoResult::FIN => {
                     is_error = false;
                     break;
@@ -174,8 +190,6 @@ impl NetService {
             // Using current state and these 2 bytes we know what to do.
             match user_net_service.handle_user_state(
                 _var_u16,
-                &mut socket,
-                &addr,
                 &mut user_info,
                 Arc::clone(&users),
                 Arc::clone(&user_enters_leaves_server_lock),

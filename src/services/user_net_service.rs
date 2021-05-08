@@ -123,8 +123,6 @@ impl UserNetService {
     pub fn handle_user_state(
         &mut self,
         current_u16: u16,
-        socket: &mut TcpStream,
-        addr: &SocketAddr,
         user_info: &mut UserInfo,
         users: Arc<Mutex<LinkedList<UserInfo>>>,
         user_enters_leaves_server_lock: Arc<Mutex<()>>,
@@ -134,8 +132,6 @@ impl UserNetService {
             UserState::NotConnected => {
                 return self.handle_not_connected_state(
                     current_u16,
-                    socket,
-                    addr,
                     user_info,
                     users,
                     user_enters_leaves_server_lock,
@@ -148,8 +144,6 @@ impl UserNetService {
     fn handle_not_connected_state(
         &mut self,
         current_u16: u16,
-        socket: &mut TcpStream,
-        addr: &SocketAddr,
         user_info: &mut UserInfo,
         users: Arc<Mutex<LinkedList<UserInfo>>>,
         user_enters_leaves_server_lock: Arc<Mutex<()>>,
@@ -158,15 +152,19 @@ impl UserNetService {
         if current_u16 as u32 > MAX_VERSION_STRING_LENGTH {
             return HandleStateResult::HandleStateErr(String::from(format!(
                 "socket ({}) on state (NotConnected) failed, reason: version str len ({}) > {}",
-                addr, current_u16, MAX_VERSION_STRING_LENGTH,
+                user_info.tcp_addr, current_u16, MAX_VERSION_STRING_LENGTH,
             )));
         }
 
         // Get version string.
         let mut client_version_buf = vec![0u8; current_u16 as usize];
-        let mut client_version_string = String::new();
+        let mut _client_version_string = String::new();
         loop {
-            match self.read_from_socket(socket, addr, &mut client_version_buf) {
+            match self.read_from_socket(
+                &mut user_info.tcp_socket,
+                &user_info.tcp_addr,
+                &mut client_version_buf,
+            ) {
                 IoResult::WouldBlock => {
                     thread::sleep(Duration::from_millis(INTERVAL_TCP_CONNECT_MS));
                     continue;
@@ -176,11 +174,11 @@ impl UserNetService {
                     if res.is_err() {
                         return HandleStateResult::HandleStateErr(String::from(format!(
                             "socket ({}) on state (NotConnected) failed, reason: std::str::from_utf8() on client_version_buf failed",
-                            addr,
+                            user_info.tcp_addr,
                         )));
                     }
 
-                    client_version_string = String::from(res.unwrap());
+                    _client_version_string = String::from(res.unwrap());
 
                     break;
                 }
@@ -190,9 +188,13 @@ impl UserNetService {
 
         // Get name string size.
         let mut client_name_size_buf = [0u8; 2];
-        let mut client_name_size = 0u16;
+        let mut _client_name_size = 0u16;
         loop {
-            match self.read_from_socket(socket, &addr, &mut client_name_size_buf) {
+            match self.read_from_socket(
+                &mut user_info.tcp_socket,
+                &user_info.tcp_addr,
+                &mut client_name_size_buf,
+            ) {
                 IoResult::WouldBlock => {
                     thread::sleep(Duration::from_millis(INTERVAL_TCP_CONNECT_MS));
                     continue;
@@ -202,11 +204,11 @@ impl UserNetService {
                     if res.is_err() {
                         return HandleStateResult::HandleStateErr(String::from(format!(
                             "socket ({}) decode(u16) failed",
-                            addr
+                            user_info.tcp_addr
                         )));
                     }
 
-                    client_name_size = res.unwrap();
+                    _client_name_size = res.unwrap();
 
                     break;
                 }
@@ -215,10 +217,14 @@ impl UserNetService {
         }
 
         // Get name string.
-        let mut client_name_buf = vec![0u8; client_name_size as usize];
-        let mut client_name_string = String::new();
+        let mut client_name_buf = vec![0u8; _client_name_size as usize];
+        let mut _client_name_string = String::new();
         loop {
-            match self.read_from_socket(socket, addr, &mut client_name_buf) {
+            match self.read_from_socket(
+                &mut user_info.tcp_socket,
+                &user_info.tcp_addr,
+                &mut client_name_buf,
+            ) {
                 IoResult::WouldBlock => {
                     thread::sleep(Duration::from_millis(INTERVAL_TCP_CONNECT_MS));
                     continue;
@@ -228,11 +234,11 @@ impl UserNetService {
                     if res.is_err() {
                         return HandleStateResult::HandleStateErr(String::from(format!(
                             "socket ({}) on state (NotConnected) failed, reason: std::str::from_utf8() on client_name_buf failed",
-                            addr,
+                            user_info.tcp_addr,
                         )));
                     }
 
-                    client_name_string = String::from(res.unwrap());
+                    _client_name_string = String::from(res.unwrap());
 
                     break;
                 }
@@ -246,7 +252,7 @@ impl UserNetService {
             let _guard = user_enters_leaves_server_lock.lock().unwrap();
 
             // Check if the client version is supported.
-            if client_version_string != SUPPORTED_CLIENT_VERSION {
+            if _client_version_string != SUPPORTED_CLIENT_VERSION {
                 // Send error (wrong version).
                 answer = ConnectServerAnswer::WrongVersion;
             }
@@ -256,7 +262,7 @@ impl UserNetService {
             {
                 let users_guard = users.lock().unwrap();
                 for user in users_guard.iter() {
-                    if user.username == client_name_string {
+                    if user.username == _client_name_string {
                         name_is_unique = false;
                         break;
                     }
@@ -284,7 +290,11 @@ impl UserNetService {
             }
             let mut answer_buf = answer_buf.unwrap();
             loop {
-                match self.write_to_socket(socket, &addr, &mut answer_buf) {
+                match self.write_to_socket(
+                    &mut user_info.tcp_socket,
+                    &user_info.tcp_addr,
+                    &mut answer_buf,
+                ) {
                     IoResult::WouldBlock => {
                         thread::sleep(Duration::from_millis(INTERVAL_TCP_CONNECT_MS));
                         continue;
@@ -308,7 +318,11 @@ impl UserNetService {
                 }
                 let mut answer_buf = answer_buf.unwrap();
                 loop {
-                    match self.write_to_socket(socket, &addr, &mut answer_buf) {
+                    match self.write_to_socket(
+                        &mut user_info.tcp_socket,
+                        &user_info.tcp_addr,
+                        &mut answer_buf,
+                    ) {
                         IoResult::WouldBlock => {
                             thread::sleep(Duration::from_millis(INTERVAL_TCP_CONNECT_MS));
                             continue;
@@ -322,7 +336,11 @@ impl UserNetService {
 
                 let mut supported_client_str = Vec::from(SUPPORTED_CLIENT_VERSION.as_bytes());
                 loop {
-                    match self.write_to_socket(socket, &addr, &mut supported_client_str) {
+                    match self.write_to_socket(
+                        &mut user_info.tcp_socket,
+                        &user_info.tcp_addr,
+                        &mut supported_client_str,
+                    ) {
                         IoResult::WouldBlock => {
                             thread::sleep(Duration::from_millis(INTERVAL_TCP_CONNECT_MS));
                             continue;
@@ -340,13 +358,13 @@ impl UserNetService {
                 ConnectServerAnswer::WrongVersion => {
                     return HandleStateResult::ErrInfo(String::from(format!(
                         "client version ({}) is not supported.",
-                        client_version_string
+                        _client_version_string
                     )));
                 }
                 ConnectServerAnswer::UsernameTaken => {
                     return HandleStateResult::ErrInfo(String::from(format!(
                         "username {} is not unique.",
-                        client_name_string
+                        _client_name_string
                     )));
                 }
             }
@@ -385,7 +403,11 @@ impl UserNetService {
             }
 
             loop {
-                match self.write_to_socket(socket, &addr, &mut info_out_buf) {
+                match self.write_to_socket(
+                    &mut user_info.tcp_socket,
+                    &user_info.tcp_addr,
+                    &mut info_out_buf,
+                ) {
                     IoResult::WouldBlock => {
                         thread::sleep(Duration::from_millis(INTERVAL_TCP_CONNECT_MS));
                         continue;
@@ -397,21 +419,28 @@ impl UserNetService {
                 }
             }
 
-            user_info.username = client_name_string;
+            user_info.username = _client_name_string;
             self.user_state = UserState::Connected;
 
             // New connected user.
             let mut _users_connected = 0;
             {
                 let mut users_guard = users.lock().unwrap();
-                users_guard.push_back(user_info.clone());
+                let user_info_clone = user_info.clone();
+                if user_info_clone.is_none() {
+                    return HandleStateResult::HandleStateErr(format!(
+                        "unable to clone user_info for socket ({}) AKA ({}).",
+                        user_info.tcp_addr, user_info.username
+                    ));
+                }
+                users_guard.push_back(user_info_clone.unwrap());
                 _users_connected = users_guard.len();
             }
 
             let mut logger_guard = logger.lock().unwrap();
             if let Err(e) = logger_guard.println_and_log(&format!(
                 "New connection from ({:?}) AKA ({}) [connected users: {}].",
-                addr, user_info.username, _users_connected
+                user_info.tcp_addr, user_info.username, _users_connected
             )) {
                 println!("ServerLogger failed, error: {}", e);
             }
