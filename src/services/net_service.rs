@@ -55,7 +55,7 @@ impl NetService {
         }
 
         if let Err(e) = logger_guard.println_and_log(&format!(
-            "\nStarting... Listening on port {} for connection requests...",
+            "Starting... Listening on port {} for connection requests...",
             self.server_config.server_port
         )) {
             println!("ServerLogger failed, error: {}", e);
