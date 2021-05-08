@@ -48,17 +48,16 @@ impl NetService {
             return;
         }
 
-        let mut logger_guard = self.logger.lock().unwrap();
+        {
+            let mut logger_guard = self.logger.lock().unwrap();
 
-        if let Err(e) = logger_guard.open(&self.server_config.log_file_path) {
-            println!("ServerLogger::open() failed, error: {}", e);
-        }
+            if let Err(e) = logger_guard.open(&self.server_config.log_file_path) {
+                println!("ServerLogger::open() failed, error: {}", e);
+            }
 
-        if let Err(e) = logger_guard.println_and_log(&format!(
-            "Starting... Listening on port {} for connection requests...",
-            self.server_config.server_port
-        )) {
-            println!("ServerLogger failed, error: {}", e);
+            if let Err(e) = logger_guard.println_and_log("Starting...") {
+                println!("ServerLogger failed, error: {}", e);
+            }
         }
 
         self.is_running = true;
@@ -90,6 +89,17 @@ impl NetService {
             return;
         }
         let listener_socket = listener_socket.unwrap();
+
+        {
+            let mut logger_guard = logger.lock().unwrap();
+
+            if let Err(e) = logger_guard.println_and_log(&format!(
+                "Ready. Listening on port {} for connection requests...",
+                server_config.server_port
+            )) {
+                println!("ServerLogger failed, error: {}", e);
+            }
+        }
 
         loop {
             let accept_result = listener_socket.accept();
