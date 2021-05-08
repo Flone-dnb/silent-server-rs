@@ -209,7 +209,7 @@ impl NetService {
                     println!("handle_user_state() failed, error: {}", msg);
                     break;
                 }
-                HandleStateResult::ErrInfo(msg) => {
+                HandleStateResult::NonCriticalErr(msg) => {
                     println!(
                         "handle_user_state() returned status on socket ({}): {}",
                         addr, msg

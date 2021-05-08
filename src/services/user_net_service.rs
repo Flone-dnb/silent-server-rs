@@ -1,14 +1,17 @@
+// External.
 use bytevec::{ByteDecodable, ByteEncodable};
-
 use num_derive::FromPrimitive;
 use num_derive::ToPrimitive;
 use num_traits::cast::ToPrimitive;
+
+// Std.
 use std::collections::LinkedList;
 use std::io::prelude::*;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+// Custom.
 use crate::config_io::ServerLogger;
 use crate::global_params::*;
 use crate::services::net_service::*;
@@ -42,7 +45,7 @@ pub enum HandleStateResult {
     Ok,
     ReadErr(IoResult),
     HandleStateErr(String),
-    ErrInfo(String), // not a critical error
+    NonCriticalErr(String), // not a critical error
 }
 
 pub struct UserNetService {
@@ -64,10 +67,10 @@ impl UserNetService {
             }
             Ok(n) => {
                 if n != buf.len() {
-                    return IoResult::Err(String::from(format!(
-                        "socket ({}) try_read() failed, error: failed to read 'buf_u16' size",
-                        user_info.tcp_addr
-                    )));
+                    return IoResult::Err(format!(
+                        "socket ({}) try_read() failed, error: failed to read 'buf' size (got: {}, expected: {})",
+                        user_info.tcp_addr, n, buf.len()
+                    ));
                 }
 
                 return IoResult::Ok(n);
@@ -92,10 +95,10 @@ impl UserNetService {
             }
             Ok(n) => {
                 if n != buf.len() {
-                    return IoResult::Err(String::from(format!(
-                        "socket ({}) try_write() failed, error: failed to read 'buf_u16' size",
-                        user_info.tcp_addr
-                    )));
+                    return IoResult::Err(format!(
+                        "socket ({}) try_write() failed, error: failed to read 'buf' size (got: {}, expected: {})",
+                        user_info.tcp_addr, n, buf.len()
+                    ));
                 }
 
                 return IoResult::Ok(n);
@@ -174,7 +177,7 @@ impl UserNetService {
         }
 
         // Get name string size.
-        let mut client_name_size_buf = [0u8; 2];
+        let mut client_name_size_buf = vec![0u8; std::mem::size_of::<u16>()];
         let mut _client_name_size = 0u16;
         loop {
             match self.read_from_socket_tcp(user_info, &mut client_name_size_buf) {
@@ -323,13 +326,13 @@ impl UserNetService {
             match answer {
                 ConnectServerAnswer::Ok => {}
                 ConnectServerAnswer::WrongVersion => {
-                    return HandleStateResult::ErrInfo(String::from(format!(
+                    return HandleStateResult::NonCriticalErr(String::from(format!(
                         "client version ({}) is not supported.",
                         _client_version_string
                     )));
                 }
                 ConnectServerAnswer::UsernameTaken => {
-                    return HandleStateResult::ErrInfo(String::from(format!(
+                    return HandleStateResult::NonCriticalErr(String::from(format!(
                         "username {} is not unique.",
                         _client_name_string
                     )));
@@ -382,10 +385,57 @@ impl UserNetService {
                 }
             }
 
+            // Tell others about this new user.
+            // Data:
+            // (u16): data ID = new user
+            // (u16): username len
+            // (size): username
+            let mut newuser_info_out_buf: Vec<u8> = Vec::new();
+
+            let data_id = ServerMessage::NewUser.to_u16();
+            if data_id.is_none() {
+                return HandleStateResult::HandleStateErr(String::from(
+                    "ToPrimitive::to_u16() (new user info) failed.",
+                ));
+            }
+            let data_id: u16 = data_id.unwrap();
+            let data_id_buf = u16::encode::<u16>(&data_id);
+            if data_id_buf.is_err() {
+                return HandleStateResult::HandleStateErr(String::from(
+                    "encode::<u16> (data_id_buf) failed.",
+                ));
+            }
+            let mut data_id_buf = data_id_buf.unwrap();
+
+            newuser_info_out_buf.append(&mut data_id_buf);
+            newuser_info_out_buf.append(&mut client_name_size_buf);
+            newuser_info_out_buf.append(&mut client_name_buf);
+
+            // Send info about new user.
+            {
+                let mut users_guard = users.lock().unwrap();
+                for user in users_guard.iter_mut() {
+                    loop {
+                        match self.write_to_socket_tcp(user, &mut newuser_info_out_buf) {
+                            IoResult::WouldBlock => {
+                                thread::sleep(Duration::from_millis(
+                                    INTERVAL_TCP_MESSAGE_MS_UNDER_MUTEX,
+                                ));
+                                continue;
+                            }
+                            IoResult::Ok(_) => {
+                                break;
+                            }
+                            res => return HandleStateResult::ReadErr(res),
+                        }
+                    }
+                }
+            }
+
+            // New connected user.
             user_info.username = _client_name_string;
             self.user_state = UserState::Connected;
 
-            // New connected user.
             let mut _users_connected = 0;
             {
                 let mut users_guard = users.lock().unwrap();
