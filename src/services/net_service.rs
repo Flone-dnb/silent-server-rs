@@ -159,11 +159,7 @@ impl NetService {
         // Read data from the socket.
         loop {
             // Read 2 bytes.
-            match user_net_service.read_from_socket(
-                &mut user_info.tcp_socket,
-                &user_info.tcp_addr,
-                &mut buf_u16,
-            ) {
+            match user_net_service.read_from_socket_tcp(&mut user_info, &mut buf_u16) {
                 IoResult::FIN => {
                     is_error = false;
                     break;

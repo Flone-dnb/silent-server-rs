@@ -5,7 +5,6 @@ use num_derive::ToPrimitive;
 use num_traits::cast::ToPrimitive;
 use std::collections::LinkedList;
 use std::io::prelude::*;
-use std::net::*;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -56,14 +55,10 @@ impl UserNetService {
             user_state: UserState::NotConnected,
         }
     }
-    pub fn read_from_socket(
-        &self,
-        socket: &mut TcpStream,
-        addr: &SocketAddr,
-        buf: &mut [u8],
-    ) -> IoResult {
+    pub fn read_from_socket_tcp(&self, user_info: &mut UserInfo, buf: &mut [u8]) -> IoResult {
+        let _io_guard = user_info.tcp_io_mutex.lock().unwrap();
         // (non-blocking)
-        match socket.read(buf) {
+        match user_info.tcp_socket.read(buf) {
             Ok(0) => {
                 return IoResult::FIN;
             }
@@ -71,7 +66,7 @@ impl UserNetService {
                 if n != buf.len() {
                     return IoResult::Err(String::from(format!(
                         "socket ({}) try_read() failed, error: failed to read 'buf_u16' size",
-                        addr
+                        user_info.tcp_addr
                     )));
                 }
 
@@ -83,19 +78,15 @@ impl UserNetService {
             Err(e) => {
                 return IoResult::Err(String::from(format!(
                     "socket ({}) try_read() failed, error: {}",
-                    addr, e
+                    user_info.tcp_addr, e
                 )));
             }
         };
     }
-    pub fn write_to_socket(
-        &self,
-        socket: &mut TcpStream,
-        addr: &SocketAddr,
-        buf: &mut [u8],
-    ) -> IoResult {
+    pub fn write_to_socket_tcp(&self, user_info: &mut UserInfo, buf: &mut [u8]) -> IoResult {
+        let _io_guard = user_info.tcp_io_mutex.lock().unwrap();
         // (non-blocking)
-        match socket.write(buf) {
+        match user_info.tcp_socket.write(buf) {
             Ok(0) => {
                 return IoResult::FIN;
             }
@@ -103,7 +94,7 @@ impl UserNetService {
                 if n != buf.len() {
                     return IoResult::Err(String::from(format!(
                         "socket ({}) try_write() failed, error: failed to read 'buf_u16' size",
-                        addr
+                        user_info.tcp_addr
                     )));
                 }
 
@@ -115,7 +106,7 @@ impl UserNetService {
             Err(e) => {
                 return IoResult::Err(String::from(format!(
                     "socket ({}) try_write() failed, error: {}",
-                    addr, e
+                    user_info.tcp_addr, e
                 )));
             }
         };
@@ -160,11 +151,7 @@ impl UserNetService {
         let mut client_version_buf = vec![0u8; current_u16 as usize];
         let mut _client_version_string = String::new();
         loop {
-            match self.read_from_socket(
-                &mut user_info.tcp_socket,
-                &user_info.tcp_addr,
-                &mut client_version_buf,
-            ) {
+            match self.read_from_socket_tcp(user_info, &mut client_version_buf) {
                 IoResult::WouldBlock => {
                     thread::sleep(Duration::from_millis(INTERVAL_TCP_CONNECT_MS));
                     continue;
@@ -190,11 +177,7 @@ impl UserNetService {
         let mut client_name_size_buf = [0u8; 2];
         let mut _client_name_size = 0u16;
         loop {
-            match self.read_from_socket(
-                &mut user_info.tcp_socket,
-                &user_info.tcp_addr,
-                &mut client_name_size_buf,
-            ) {
+            match self.read_from_socket_tcp(user_info, &mut client_name_size_buf) {
                 IoResult::WouldBlock => {
                     thread::sleep(Duration::from_millis(INTERVAL_TCP_CONNECT_MS));
                     continue;
@@ -220,11 +203,7 @@ impl UserNetService {
         let mut client_name_buf = vec![0u8; _client_name_size as usize];
         let mut _client_name_string = String::new();
         loop {
-            match self.read_from_socket(
-                &mut user_info.tcp_socket,
-                &user_info.tcp_addr,
-                &mut client_name_buf,
-            ) {
+            match self.read_from_socket_tcp(user_info, &mut client_name_buf) {
                 IoResult::WouldBlock => {
                     thread::sleep(Duration::from_millis(INTERVAL_TCP_CONNECT_MS));
                     continue;
@@ -290,11 +269,7 @@ impl UserNetService {
             }
             let mut answer_buf = answer_buf.unwrap();
             loop {
-                match self.write_to_socket(
-                    &mut user_info.tcp_socket,
-                    &user_info.tcp_addr,
-                    &mut answer_buf,
-                ) {
+                match self.write_to_socket_tcp(user_info, &mut answer_buf) {
                     IoResult::WouldBlock => {
                         thread::sleep(Duration::from_millis(INTERVAL_TCP_CONNECT_MS));
                         continue;
@@ -318,11 +293,7 @@ impl UserNetService {
                 }
                 let mut answer_buf = answer_buf.unwrap();
                 loop {
-                    match self.write_to_socket(
-                        &mut user_info.tcp_socket,
-                        &user_info.tcp_addr,
-                        &mut answer_buf,
-                    ) {
+                    match self.write_to_socket_tcp(user_info, &mut answer_buf) {
                         IoResult::WouldBlock => {
                             thread::sleep(Duration::from_millis(INTERVAL_TCP_CONNECT_MS));
                             continue;
@@ -336,11 +307,7 @@ impl UserNetService {
 
                 let mut supported_client_str = Vec::from(SUPPORTED_CLIENT_VERSION.as_bytes());
                 loop {
-                    match self.write_to_socket(
-                        &mut user_info.tcp_socket,
-                        &user_info.tcp_addr,
-                        &mut supported_client_str,
-                    ) {
+                    match self.write_to_socket_tcp(user_info, &mut supported_client_str) {
                         IoResult::WouldBlock => {
                             thread::sleep(Duration::from_millis(INTERVAL_TCP_CONNECT_MS));
                             continue;
@@ -403,11 +370,7 @@ impl UserNetService {
             }
 
             loop {
-                match self.write_to_socket(
-                    &mut user_info.tcp_socket,
-                    &user_info.tcp_addr,
-                    &mut info_out_buf,
-                ) {
+                match self.write_to_socket_tcp(user_info, &mut info_out_buf) {
                     IoResult::WouldBlock => {
                         thread::sleep(Duration::from_millis(INTERVAL_TCP_CONNECT_MS));
                         continue;
