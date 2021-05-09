@@ -1,11 +1,15 @@
+// External.
 use bytevec::{ByteDecodable, ByteEncodable};
+use chrono::prelude::*;
 use platform_dirs::UserDirs;
 
-use crate::global_params::*;
-use chrono::prelude::*;
+// Std.
 use std::fs::File;
 use std::io::prelude::*;
 use std::path::Path;
+
+// Custom.
+use crate::global_params::*;
 
 pub struct ServerLogger {
     file_handle: Option<File>,
