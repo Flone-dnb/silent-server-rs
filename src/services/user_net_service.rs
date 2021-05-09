@@ -68,8 +68,8 @@ impl UserNetService {
             Ok(n) => {
                 if n != buf.len() {
                     return IoResult::Err(format!(
-                        "socket ({}) try_read() failed, error: failed to read 'buf' size (got: {}, expected: {})",
-                        user_info.tcp_addr, n, buf.len()
+                        "UserNetService::read_from_socket_tcp::read() failed, error: socket ({}) failed to read 'buf' size (got: {}, expected: {}) at [{}, {}]",
+                        user_info.tcp_addr, n, buf.len(), file!(), line!()
                     ));
                 }
 
@@ -79,10 +79,10 @@ impl UserNetService {
                 return IoResult::WouldBlock;
             }
             Err(e) => {
-                return IoResult::Err(String::from(format!(
-                    "socket ({}) try_read() failed, error: {}",
-                    user_info.tcp_addr, e
-                )));
+                return IoResult::Err(format!(
+                    "UserNetService::read_from_socket_tcp::read() failed, error: socket ({}) failed to read with error {} at [{}, {}]",
+                    user_info.tcp_addr, e, file!(), line!()
+                ));
             }
         };
     }
@@ -144,10 +144,10 @@ impl UserNetService {
         logger: Arc<Mutex<ServerLogger>>,
     ) -> HandleStateResult {
         if current_u16 as u32 > MAX_VERSION_STRING_LENGTH {
-            return HandleStateResult::HandleStateErr(String::from(format!(
-                "socket ({}) on state (NotConnected) failed, reason: version str len ({}) > {}",
-                user_info.tcp_addr, current_u16, MAX_VERSION_STRING_LENGTH,
-            )));
+            return HandleStateResult::HandleStateErr(format!(
+                "An error occurred, error: socket ({}) on state (NotConnected) failed, reason: version str len ({}) > {} at [{}, {}]",
+                user_info.tcp_addr, current_u16, MAX_VERSION_STRING_LENGTH, file!(), line!()
+            ));
         }
 
         // Get version string.
@@ -161,11 +161,11 @@ impl UserNetService {
                 }
                 IoResult::Ok(_bytes) => {
                     let res = std::str::from_utf8(&client_version_buf);
-                    if res.is_err() {
-                        return HandleStateResult::HandleStateErr(String::from(format!(
-                            "socket ({}) on state (NotConnected) failed, reason: std::str::from_utf8() on client_version_buf failed",
-                            user_info.tcp_addr,
-                        )));
+                    if let Err(e) = res {
+                        return HandleStateResult::HandleStateErr(format!(
+                            "std::str::from_utf8() failed, error: socket ({}) on state (NotConnected) failed on 'client_version_buf' (error: {}) at [{}, {}]",
+                            user_info.tcp_addr, e, file!(), line!()
+                        ));
                     }
 
                     _client_version_string = String::from(res.unwrap());
@@ -187,11 +187,11 @@ impl UserNetService {
                 }
                 IoResult::Ok(_bytes) => {
                     let res = u16::decode::<u16>(&client_name_size_buf);
-                    if res.is_err() {
-                        return HandleStateResult::HandleStateErr(String::from(format!(
-                            "socket ({}) decode(u16) failed",
-                            user_info.tcp_addr
-                        )));
+                    if let Err(e) = res {
+                        return HandleStateResult::HandleStateErr(format!(
+                            "u16::decode::<u16>() failed, error: socket ({}) failed to decode 'client_name_size_buf' (error: {}) at [{}, {}]",
+                            user_info.tcp_addr, e, file!(), line!()
+                        ));
                     }
 
                     _client_name_size = res.unwrap();
@@ -213,11 +213,11 @@ impl UserNetService {
                 }
                 IoResult::Ok(_bytes) => {
                     let res = std::str::from_utf8(&client_name_buf);
-                    if res.is_err() {
-                        return HandleStateResult::HandleStateErr(String::from(format!(
-                            "socket ({}) on state (NotConnected) failed, reason: std::str::from_utf8() on client_name_buf failed",
-                            user_info.tcp_addr,
-                        )));
+                    if let Err(e) = res {
+                        return HandleStateResult::HandleStateErr(format!(
+                            "std::str::from_utf8() failed, error: socket ({}) on state (NotConnected) failed on 'client_name_buf' (error: {}) at [{}, {}]",
+                            user_info.tcp_addr, e, file!(), line!()
+                        ));
                     }
 
                     _client_name_string = String::from(res.unwrap());
@@ -259,15 +259,19 @@ impl UserNetService {
             // Send.
             let id = answer.to_u16();
             if id.is_none() {
-                return HandleStateResult::HandleStateErr(String::from(
-                    "ToPrimitive::to_u16() failed.",
+                return HandleStateResult::HandleStateErr(format!(
+                    "ToPrimitive::to_u16() failed, error: socket ({}) on state (NotConnected) failed at [{}, {}]",
+                    user_info.tcp_addr,
+                    file!(),
+                    line!()
                 ));
             }
             let answer_id = id.unwrap();
             let answer_buf = u16::encode::<u16>(&answer_id);
-            if answer_buf.is_err() {
-                return HandleStateResult::HandleStateErr(String::from(
-                    "encode::<u16> (answer_buf) failed.",
+            if let Err(e) = answer_buf {
+                return HandleStateResult::HandleStateErr(format!(
+                    "u16::encode::<u16> failed, error: socket ({}) on state (NotConnected) failed on 'answer_id' (error: {}) at [{}, {}]",
+                    user_info.tcp_addr, e, file!(), line!()
                 ));
             }
             let mut answer_buf = answer_buf.unwrap();
@@ -289,9 +293,10 @@ impl UserNetService {
                 // Write version string size.
                 let supported_client_str_len = SUPPORTED_CLIENT_VERSION.len() as u16;
                 let answer_buf = u16::encode::<u16>(&supported_client_str_len);
-                if answer_buf.is_err() {
-                    return HandleStateResult::HandleStateErr(String::from(
-                        "encode::<u16> (supported_client_str_len) failed.",
+                if let Err(e) = answer_buf {
+                    return HandleStateResult::HandleStateErr(format!(
+                        "u16::encode::<u16> failed, error: socket ({}) on state (NotConnected) failed on 'supported_client_str_len' (error: {}) at [{}, {}]",
+                        user_info.tcp_addr, e, file!(), line!()
                     ));
                 }
                 let mut answer_buf = answer_buf.unwrap();
@@ -326,16 +331,16 @@ impl UserNetService {
             match answer {
                 ConnectServerAnswer::Ok => {}
                 ConnectServerAnswer::WrongVersion => {
-                    return HandleStateResult::NonCriticalErr(String::from(format!(
-                        "client version ({}) is not supported.",
-                        _client_version_string
-                    )));
+                    return HandleStateResult::NonCriticalErr(format!(
+                        "Non-critical error occurred, error: socket ({}) on state (NotConnected) failed with client version ({}) which is not supported at [{}, {}]",
+                        user_info.tcp_addr, _client_version_string, file!(), line!()
+                    ));
                 }
                 ConnectServerAnswer::UsernameTaken => {
-                    return HandleStateResult::NonCriticalErr(String::from(format!(
-                        "username {} is not unique.",
-                        _client_name_string
-                    )));
+                    return HandleStateResult::NonCriticalErr(format!(
+                        "Non-critical error occurred, error: socket ({}) on state (NotConnected) username {} is not unique at [{}, {}]",
+                        user_info.tcp_addr, _client_name_string, file!(), line!()
+                    ));
                 }
             }
 
@@ -346,9 +351,10 @@ impl UserNetService {
 
                 let users_count = users_guard.len() as u64;
                 let users_count_buf = u64::encode::<u64>(&users_count);
-                if users_count_buf.is_err() {
-                    return HandleStateResult::HandleStateErr(String::from(
-                        "encode::<u64> on users_count failed.",
+                if let Err(e) = users_count_buf {
+                    return HandleStateResult::HandleStateErr(format!(
+                        "u64::encode::<u64> failed, error: socket ({}) on state (NotConnected) failed on 'users_count' (error: {}) at [{}, {}]",
+                        user_info.tcp_addr, e, file!(), line!()
                     ));
                 }
                 let mut users_count_buf = users_count_buf.unwrap();
@@ -357,9 +363,10 @@ impl UserNetService {
                 for user in users_guard.iter() {
                     let username_len = user.username.len() as u16;
                     let user_name_len_buf = u16::encode::<u16>(&username_len);
-                    if user_name_len_buf.is_err() {
-                        return HandleStateResult::HandleStateErr(String::from(
-                            "encode::<u16> on user_name_len failed.",
+                    if let Err(e) = user_name_len_buf {
+                        return HandleStateResult::HandleStateErr(format!(
+                            "u16::encode::<u16> failed, error: socket ({}) on state (NotConnected) failed on 'username_len' (error: {}) at [{}, {}]",
+                            user_info.tcp_addr, e, file!(), line!()
                         ));
                     }
                     let mut user_name_len_buf = user_name_len_buf.unwrap();
@@ -394,15 +401,17 @@ impl UserNetService {
 
             let data_id = ServerMessage::NewUser.to_u16();
             if data_id.is_none() {
-                return HandleStateResult::HandleStateErr(String::from(
-                    "ToPrimitive::to_u16() (new user info) failed.",
+                return HandleStateResult::HandleStateErr(format!(
+                    "ToPrimitive::to_u16() failed, error: socket ({}) on state (NotConnected) at [{}, {}]",
+                    user_info.tcp_addr, file!(), line!()
                 ));
             }
             let data_id: u16 = data_id.unwrap();
             let data_id_buf = u16::encode::<u16>(&data_id);
-            if data_id_buf.is_err() {
-                return HandleStateResult::HandleStateErr(String::from(
-                    "encode::<u16> (data_id_buf) failed.",
+            if let Err(e) = data_id_buf {
+                return HandleStateResult::HandleStateErr(format!(
+                    "u16::encode::<u16> failed, error: socket ({}) on state (NotConnected) failed on 'data_id' (error: {}) at [{}, {}]",
+                    user_info.tcp_addr, e, file!(), line!()
                 ));
             }
             let mut data_id_buf = data_id_buf.unwrap();
@@ -440,10 +449,14 @@ impl UserNetService {
             {
                 let mut users_guard = users.lock().unwrap();
                 let user_info_clone = user_info.clone();
-                if user_info_clone.is_none() {
+                if let Err(msg) = user_info_clone {
                     return HandleStateResult::HandleStateErr(format!(
-                        "unable to clone user_info for socket ({}) AKA ({}).",
-                        user_info.tcp_addr, user_info.username
+                        "{}, unable to clone user_info for socket ({}) AKA ({}) at [{}, {}]",
+                        msg,
+                        user_info.tcp_addr,
+                        user_info.username,
+                        file!(),
+                        line!()
                     ));
                 }
                 users_guard.push_back(user_info_clone.unwrap());
@@ -455,7 +468,7 @@ impl UserNetService {
                 "New connection from ({:?}) AKA ({}) [connected users: {}].",
                 user_info.tcp_addr, user_info.username, _users_connected
             )) {
-                println!("ServerLogger failed, error: {}", e);
+                println!("{} at [{}, {}]", e, file!(), line!());
             }
         }
 

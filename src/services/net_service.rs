@@ -20,13 +20,17 @@ pub struct UserInfo {
     pub tcp_io_mutex: Arc<Mutex<()>>,
 }
 impl UserInfo {
-    pub fn clone(&self) -> Option<UserInfo> {
+    pub fn clone(&self) -> Result<UserInfo, String> {
         let tcp_socket_clone = self.tcp_socket.try_clone();
-        if tcp_socket_clone.is_err() {
-            println!("UserInfo::clone() failed at tcp_socket.try_clone().");
-            return None;
+        if let Err(e) = tcp_socket_clone {
+            return Err(format!(
+                "UserInfo::clone() failed, error: {} at [{}, {}]",
+                e,
+                file!(),
+                line!()
+            ));
         }
-        Some(UserInfo {
+        Ok(UserInfo {
             username: self.username.clone(),
             tcp_addr: self.tcp_addr.clone(),
             tcp_socket: tcp_socket_clone.unwrap(),
@@ -96,8 +100,13 @@ impl NetService {
     ) {
         let listener_socket = TcpListener::bind(format!("127.0.0.1:{}", server_config.server_port));
 
-        if listener_socket.is_err() {
-            println!("listener_socket.accept() failed.");
+        if let Err(e) = listener_socket {
+            println!(
+                "listener_socket.accept() failed, error: {} at [{}, {}]",
+                e,
+                file!(),
+                line!()
+            );
             return;
         }
         let listener_socket = listener_socket.unwrap();
@@ -109,7 +118,12 @@ impl NetService {
                 "Ready. Listening on port {} for connection requests...",
                 server_config.server_port
             )) {
-                println!("ServerLogger failed, error: {}", e);
+                println!(
+                    "ServerLogger.println_and_log() failed, error: {} at [{}, {}]",
+                    e,
+                    file!(),
+                    line!()
+                );
             }
         }
 
@@ -117,17 +131,34 @@ impl NetService {
             let accept_result = listener_socket.accept();
 
             if let Err(e) = accept_result {
-                println!("listener_socket.accept() failed, err: {}", e);
+                println!(
+                    "listener_socket.accept() failed, error: {} at [{}, {}]",
+                    e,
+                    file!(),
+                    line!()
+                );
                 continue;
             }
 
             let (socket, addr) = accept_result.unwrap();
-            if socket.set_nodelay(true).is_err() {
-                println!("socket.set_nodelay() failed on addr ({}).", addr);
+            if let Err(e) = socket.set_nodelay(true) {
+                println!(
+                    "socket.set_nodelay() failed on addr ({}), error: {} at [{}, {}]",
+                    addr,
+                    e,
+                    file!(),
+                    line!()
+                );
                 continue;
             }
-            if socket.set_nonblocking(true).is_err() {
-                println!("socket.set_nonblocking() failed on addr ({}).", addr);
+            if let Err(e) = socket.set_nonblocking(true) {
+                println!(
+                    "socket.set_nonblocking() failed on addr ({}), error: {} at [{}, {}]",
+                    addr,
+                    e,
+                    file!(),
+                    line!()
+                );
                 continue;
             }
 
@@ -172,13 +203,13 @@ impl NetService {
                     continue;
                 }
                 IoResult::Err(e) => {
-                    println!("read_from_socket() failed, error: {}", e);
+                    println!("{} at [{}, {}]", e, file!(), line!());
                     break;
                 }
                 IoResult::Ok(_bytes) => {
                     let res = u16::decode::<u16>(&buf_u16);
-                    if res.is_err() {
-                        println!("socket ({}) decode(u16) failed", addr);
+                    if let Err(e) = res {
+                        println!("NetService::handle_user::read_from_socket_tcp() failed, error: socket ({}) decode(u16) failed with error: {} at [{}, {}]", addr, e, file!(), line!());
                         break;
                     }
 
@@ -200,23 +231,17 @@ impl NetService {
                         break;
                     }
                     IoResult::Err(e) => {
-                        println!(
-                            "handle_user_state().read_from_socket() failed, error: {}",
-                            e
-                        );
+                        println!("{} at [{}, {}]", e, file!(), line!());
                         break;
                     }
                     _ => {}
                 },
                 HandleStateResult::HandleStateErr(msg) => {
-                    println!("handle_user_state() failed, error: {}", msg);
+                    println!("{} at [{}, {}]", msg, file!(), line!());
                     break;
                 }
                 HandleStateResult::NonCriticalErr(msg) => {
-                    println!(
-                        "handle_user_state() returned status on socket ({}): {}",
-                        addr, msg
-                    );
+                    println!("{} at [{}, {}]", msg, file!(), line!());
                     break;
                 }
                 _ => {}
@@ -269,7 +294,7 @@ impl NetService {
         // Show output.
         let mut logger_guard = logger.lock().unwrap();
         if let Err(e) = logger_guard.println_and_log(&_out_str) {
-            println!("ServerLogger failed, error: {}", e);
+            println!("{} at [{}, {}]", e, file!(), line!());
         }
     }
 }
