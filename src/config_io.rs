@@ -22,16 +22,20 @@ impl ServerLogger {
     pub fn open(&mut self, log_file_path: &String) -> Result<(), String> {
         if Path::new(log_file_path).exists() {
             // Remove existing (old) config file.
-            if std::fs::remove_file(log_file_path).is_err() {
-                return Err(format!("std::fs::remove_file() failed, error: can't remove old config file to save a new one at [{}, {}]", file!(), line!()));
+            if let Err(e) = std::fs::remove_file(log_file_path) {
+                return Err(format!("std::fs::remove_file() failed, error: can't remove old config file to save a new one (error: {}) at [{}, {}]",
+                e,
+                file!(),
+                line!()));
             }
         }
 
         let file = File::create(log_file_path);
-        if file.is_err() {
+        if let Err(e) = file {
             return Err(format!(
-                "File::create() failed, error: can't create log file (location {}) at [{}, {}]",
+                "File::create() failed, error: can't create log file (location {}) (error: {}) at [{}, {}]",
                 log_file_path,
+                e,
                 file!(),
                 line!()
             ));
@@ -57,19 +61,18 @@ impl ServerLogger {
             }
 
             let file = self.file_handle.as_mut().unwrap();
-            if file
-                .write_all(format!("\n[{}:{}]", hour, minute).as_bytes())
-                .is_err()
-            {
+            if let Err(e) = file.write_all(format!("\n[{}:{}]", hour, minute).as_bytes()) {
                 return Err(format!(
-                    "File::write_all() failed, error: can't write time to log file at [{}, {}]",
+                    "File::write_all() failed, error: can't write time to log file (error: {}) at [{}, {}]",
+                    e,
                     file!(),
                     line!()
                 ));
             }
-            if file.write_all(format!("{}\n", info).as_bytes()).is_err() {
+            if let Err(e) = file.write_all(format!("{}\n", info).as_bytes()) {
                 return Err(format!(
-                    "File::write_all() failed, error: can't write info to log file at [{}, {}]",
+                    "File::write_all() failed, error: can't write info to log file (error: {}) at [{}, {}]",
+                    e,
                     file!(),
                     line!()
                 ));
@@ -78,7 +81,7 @@ impl ServerLogger {
             Ok(())
         } else {
             Err(format!(
-                "An error occurred: no log file created, 'open()' log file first at [{}, {}]",
+                "An error occurred: no log file created, 'open()' log file first, at [{}, {}]",
                 file!(),
                 line!()
             ))
@@ -142,13 +145,21 @@ impl ServerConfig {
         }
         let config_file_path = config_file_path.unwrap();
 
-        //
-        // Open existing config file.
-        //
-        let config_file = File::open(&config_file_path);
-        if config_file.is_err() {
+        if !Path::new(&config_file_path).exists() {
             return Err(format!(
-                "File::open() failed, error: can't open config file '{}' at [{}, {}]",
+                "An error occurred, error: ServerConfig::read_config() failed: the file at ({}) does not exist at [{}, {}]",
+                config_file_path,
+                file!(),
+                line!()
+            ));
+        }
+
+        // Open existing config file.
+        let config_file = File::open(&config_file_path);
+        if let Err(e) = config_file {
+            return Err(format!(
+                "File::open() failed, error: can't open config file '{}' (error: {}) at [{}, {}]",
+                e,
                 config_file_path,
                 file!(),
                 line!()
@@ -158,9 +169,10 @@ impl ServerConfig {
 
         // Read magic number.
         let mut buf = vec![0u8; std::mem::size_of::<u16>()];
-        if config_file.read(&mut buf).is_err() {
+        if let Err(e) = config_file.read(&mut buf) {
             return Err(format!(
-                "File::read() failed, error: can't read 'server_port' from config file at [{}, {}]",
+                "File::read() failed, error: can't read magic number from config file (error: {}) at [{}, {}]",
+                e,
                 file!(),
                 line!()
             ));
@@ -178,9 +190,10 @@ impl ServerConfig {
 
         // Read config version.
         let mut buf = vec![0u8; std::mem::size_of::<u64>()];
-        if config_file.read(&mut buf).is_err() {
+        if let Err(e) = config_file.read(&mut buf) {
             return Err(format!(
-                "File::read() failed, error: can't read 'server_port' from config file at [{}, {}]",
+                "File::read() failed, error: can't read config version from config file (error: {}) at [{}, {}]",
+                e,
                 file!(),
                 line!()
             ));
@@ -190,9 +203,10 @@ impl ServerConfig {
 
         // Read server port.
         let mut buf = vec![0u8; 2];
-        if config_file.read(&mut buf).is_err() {
+        if let Err(e) = config_file.read(&mut buf) {
             return Err(format!(
-                "File::read() failed, error: can't read 'server_port' from config file at [{}, {}]",
+                "File::read() failed, error: can't read 'server_port' from config file (error: {}) at [{}, {}]",
+                e,
                 file!(),
                 line!()
             ));
@@ -202,8 +216,9 @@ impl ServerConfig {
         // Read server password size.
         let mut buf = vec![0u8; 4];
         let mut _password_byte_count = 0u32;
-        if config_file.read(&mut buf).is_err() {
-            return Err(format!("File::read() failed, error: can't read server's password size from config file at [{}, {}]",
+        if let Err(e) = config_file.read(&mut buf) {
+            return Err(format!("File::read() failed, error: can't read server's password size from config file (error: {}) at [{}, {}]",
+            e,
             file!(),
             line!()));
         }
@@ -212,14 +227,16 @@ impl ServerConfig {
         // Read server password.
         let mut buf = vec![0u8; _password_byte_count as usize];
         if _password_byte_count > 0 {
-            if config_file.read(&mut buf).is_err() {
-                return Err(format!("File::read() failed, error: can't read 'server_password' from config file at [{}, {}]",
+            if let Err(e) = config_file.read(&mut buf) {
+                return Err(format!("File::read() failed, error: can't read 'server_password' from config file (error: {}) at [{}, {}]",
+                e,
                 file!(),
                 line!()));
             }
             let server_pass = std::str::from_utf8(&buf);
-            if server_pass.is_err() {
-                return Err(format!("std::str::from_utf8() failed, error: can't convert raw bytes of 'server_password' to string at [{}, {}]",
+            if let Err(e) = server_pass {
+                return Err(format!("std::str::from_utf8() failed, error: can't convert raw bytes of 'server_password' to string (error: {}) at [{}, {}]",
+                e,
                 file!(),
                 line!()));
             }
@@ -242,10 +259,11 @@ impl ServerConfig {
 
         if Path::new(&config_file_path).exists() {
             // Remove existing (old) config file.
-            if std::fs::remove_file(&config_file_path).is_err() {
+            if let Err(e) = std::fs::remove_file(&config_file_path) {
                 return Err(
-                format!("std::fs::remove_file() failed, error: can't remove old config file to save a new one (file exists at location: {}) at [{}, {}]",
+                format!("std::fs::remove_file() failed, error: can't remove old config file to save a new one (file exists at location: {}) (error: {}) at [{}, {}]",
                 config_file_path,
+                e,
                 file!(),
                 line!()));
             }
@@ -253,11 +271,12 @@ impl ServerConfig {
 
         // Create new config file.
         let config_file = File::create(&config_file_path);
-        if config_file.is_err() {
+        if let Err(e) = config_file {
             format!("can't create new config file '{}'", config_file_path,);
             return Err(format!(
-                "File::create() failed, error: can't create new config file at '{}' at [{}, {}]",
+                "File::create() failed, error: can't create new config file at '{}' (error: {}) at [{}, {}]",
                 config_file_path,
+                e,
                 file!(),
                 line!()
             ));
@@ -266,51 +285,46 @@ impl ServerConfig {
 
         // Write magic number.
         let magic_number = CONFIG_FILE_MAGIC_NUMBER;
-        if config_file
-            .write(&magic_number.encode::<u16>().unwrap())
-            .is_err()
-        {
-            return Err(format!("File::write() failed, error: can't write 'magic_number' to new config file at [{}, {}]",
+        if let Err(e) = config_file.write(&magic_number.encode::<u16>().unwrap()) {
+            return Err(
+                format!("File::write() failed, error: can't write 'magic_number' to new config file (error: {}) at [{}, {}]",
+            e,
             file!(),
-            line!()));
+            line!()),
+            );
         }
 
         // Write config file version.
         let config_version = CONFIG_FILE_VERSION;
-        if config_file
-            .write(&config_version.encode::<u64>().unwrap())
-            .is_err()
-        {
-            return Err(format!("File::write() failed, error: can't write 'config_version' to new config file at [{}, {}]",
+        if let Err(e) = config_file.write(&config_version.encode::<u64>().unwrap()) {
+            return Err(format!("File::write() failed, error: can't write 'config_version' to new config file (error: {}) at [{}, {}]",
+            e,
             file!(),
             line!()));
         }
 
         // Write server port.
-        if config_file
-            .write(&self.server_port.encode::<u16>().unwrap())
-            .is_err()
-        {
-            return Err(format!("File::write() failed, error: can't write 'server_port' to new config file at [{}, {}]",
+        if let Err(e) = config_file.write(&self.server_port.encode::<u16>().unwrap()) {
+            return Err(format!("File::write() failed, error: can't write 'server_port' to new config file (error: {}) at [{}, {}]",
+            e,
             file!(),
             line!()));
         }
 
         // Write server password size.
         let pass_size: u32 = self.server_password.len() as u32;
-        if config_file
-            .write(&pass_size.encode::<u32>().unwrap())
-            .is_err()
-        {
-            return Err(format!("File::write() failed, error: can't write server's password size to new config file at [{}, {}]",
+        if let Err(e) = config_file.write(&pass_size.encode::<u32>().unwrap()) {
+            return Err(format!("File::write() failed, error: can't write server's password size to new config file (error: {}) at [{}, {}]",
+            e,
             file!(),
             line!()));
         }
 
         // Write server password.
         if self.server_password.len() > 0 {
-            if config_file.write(self.server_password.as_bytes()).is_err() {
-                return Err(format!("File::write() failed, error: can't write 'server_password' to new config file at [{}, {}]",
+            if let Err(e) = config_file.write(self.server_password.as_bytes()) {
+                return Err(format!("File::write() failed, error: can't write 'server_password' to new config file (error: {}) at [{}, {}]",
+                e,
                 file!(),
                 line!()));
             }
@@ -332,7 +346,7 @@ impl ServerConfig {
         let res = ServerConfig::get_config_file_dir();
         match res {
             Ok(path) => return Ok(path + CONFIG_FILE_NAME),
-            Err(msg) => return Err(msg),
+            Err(msg) => return Err(format!("{} at [{}, {}]", msg, file!(), line!())),
         }
     }
 
