@@ -31,7 +31,8 @@ enum ConnectServerAnswer {
 
 #[derive(FromPrimitive, ToPrimitive, PartialEq)]
 enum ServerMessage {
-    NewUser = 0,
+    UserConnected = 0,
+    UserDisconnected = 1,
 }
 
 pub enum IoResult {
@@ -399,7 +400,7 @@ impl UserNetService {
             // (size): username
             let mut newuser_info_out_buf: Vec<u8> = Vec::new();
 
-            let data_id = ServerMessage::NewUser.to_u16();
+            let data_id = ServerMessage::UserConnected.to_u16();
             if data_id.is_none() {
                 return HandleStateResult::HandleStateErr(format!(
                     "ToPrimitive::to_u16() failed, error: socket ({}) on state (NotConnected) at [{}, {}]",
@@ -469,6 +470,79 @@ impl UserNetService {
                 user_info.tcp_addr, user_info.username, _users_connected
             )) {
                 println!("{} at [{}, {}]", e, file!(), line!());
+            }
+        }
+
+        HandleStateResult::Ok
+    }
+    pub fn send_disconnected_notice(
+        &mut self,
+        user_info: &mut UserInfo,
+        users: Arc<Mutex<LinkedList<UserInfo>>>,
+    ) -> HandleStateResult {
+        // Tell others about disconnected user.
+        // Data:
+        // (u16): data ID = user disconnected.
+        // (u16): username len.
+        // (size): username.
+        let mut user_disconnected_info_out_buf: Vec<u8> = Vec::new();
+
+        // Create data_id buffer.
+        let data_id = ServerMessage::UserDisconnected.to_u16();
+        if data_id.is_none() {
+            return HandleStateResult::HandleStateErr(format!(
+                "ToPrimitive::to_u16() failed, error: socket ({}) at [{}, {}]",
+                user_info.tcp_addr,
+                file!(),
+                line!()
+            ));
+        }
+        let data_id: u16 = data_id.unwrap();
+        let data_id_buf = u16::encode::<u16>(&data_id);
+        if let Err(e) = data_id_buf {
+            return HandleStateResult::HandleStateErr(format!(
+                "u16::encode::<u16> failed, error: socket ({}) failed on 'data_id' (error: {}) at [{}, {}]",
+                user_info.tcp_addr, e, file!(), line!()
+            ));
+        }
+        let mut data_id_buf = data_id_buf.unwrap();
+
+        // Create username len buffer.
+        let username_len = user_info.username.len() as u16;
+        let username_len_buf = u16::encode::<u16>(&username_len);
+        if let Err(e) = username_len_buf {
+            return HandleStateResult::HandleStateErr(format!(
+                "u16::encode::<u16> failed, error: socket ({}) failed on 'username_len' (error: {}) at [{}, {}]",
+                user_info.tcp_addr, e, file!(), line!()
+            ));
+        }
+        let mut username_len_buf = username_len_buf.unwrap();
+
+        // Create username buffer.
+        let mut username_buf: Vec<u8> = Vec::from(user_info.username.as_bytes());
+
+        user_disconnected_info_out_buf.append(&mut data_id_buf);
+        user_disconnected_info_out_buf.append(&mut username_len_buf);
+        user_disconnected_info_out_buf.append(&mut username_buf);
+
+        // Send info about new user.
+        {
+            let mut users_guard = users.lock().unwrap();
+            for user in users_guard.iter_mut() {
+                loop {
+                    match self.write_to_socket_tcp(user, &mut user_disconnected_info_out_buf) {
+                        IoResult::WouldBlock => {
+                            thread::sleep(Duration::from_millis(
+                                INTERVAL_TCP_MESSAGE_MS_UNDER_MUTEX,
+                            ));
+                            continue;
+                        }
+                        IoResult::Ok(_) => {
+                            break;
+                        }
+                        res => return HandleStateResult::ReadErr(res),
+                    }
+                }
             }
         }
 

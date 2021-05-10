@@ -277,6 +277,13 @@ impl NetService {
                     user_info.tcp_addr, user_info.username, _users_connected
                 );
             }
+
+            match user_net_service.send_disconnected_notice(&mut user_info, users) {
+                HandleStateResult::HandleStateErr(msg) => {
+                    println!("{} at [{}, {}]", msg, file!(), line!());
+                }
+                _ => {}
+            }
         } else {
             if is_error {
                 _out_str = format!(
