@@ -9,7 +9,7 @@ use std::thread;
 use std::time::Duration;
 
 // Custom.
-use super::user_net_service::*;
+use super::user_tcp_service::*;
 use crate::config_io::*;
 use crate::global_params::*;
 
@@ -193,13 +193,13 @@ impl NetService {
         // Read data from the socket.
         loop {
             // Read 2 bytes.
-            match user_net_service.read_from_socket_tcp(&mut user_info, &mut buf_u16) {
+            match user_net_service.read_from_socket(&mut user_info, &mut buf_u16) {
                 IoResult::FIN => {
                     is_error = false;
                     break;
                 }
                 IoResult::WouldBlock => {
-                    thread::sleep(Duration::from_millis(INTERVAL_TCP_MESSAGE_MS));
+                    thread::sleep(Duration::from_millis(INTERVAL_TCP_IDLE_MS));
                     continue;
                 }
                 IoResult::Err(e) => {
@@ -221,9 +221,9 @@ impl NetService {
             match user_net_service.handle_user_state(
                 _var_u16,
                 &mut user_info,
-                Arc::clone(&users),
-                Arc::clone(&user_enters_leaves_server_lock),
-                Arc::clone(&logger),
+                &users,
+                &user_enters_leaves_server_lock,
+                &logger,
             ) {
                 HandleStateResult::ReadErr(read_e) => match read_e {
                     IoResult::FIN => {
