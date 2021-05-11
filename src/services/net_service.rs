@@ -181,7 +181,7 @@ impl NetService {
         let mut buf_u16 = [0u8; 2];
         let mut _var_u16 = 0u16;
         let mut is_error = true;
-        let mut user_net_service = UserNetService::new();
+        let mut user_net_service = UserTcpService::new();
 
         let mut user_info = UserInfo {
             username: String::from(""),

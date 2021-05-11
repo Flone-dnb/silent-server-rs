@@ -35,6 +35,11 @@ enum ServerMessage {
     UserDisconnected = 1,
 }
 
+#[derive(FromPrimitive, ToPrimitive, PartialEq)]
+pub enum ClientMessage {
+    UserMessage = 0,
+}
+
 pub enum IoResult {
     Ok(usize),
     WouldBlock,
@@ -49,13 +54,13 @@ pub enum HandleStateResult {
     NonCriticalErr(String), // not a critical error
 }
 
-pub struct UserNetService {
+pub struct UserTcpService {
     pub user_state: UserState,
 }
 
-impl UserNetService {
+impl UserTcpService {
     pub fn new() -> Self {
-        UserNetService {
+        UserTcpService {
             user_state: UserState::NotConnected,
         }
     }
