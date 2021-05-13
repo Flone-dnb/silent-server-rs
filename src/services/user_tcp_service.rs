@@ -232,6 +232,12 @@ impl UserTcpService {
                 res => return HandleStateResult::ReadErr(res),
             }
         }
+        if _client_name_size as usize > MAX_USERNAME_SIZE {
+            return HandleStateResult::HandleStateErr(format!(
+                "An error occurred, error: socket ({}) on state (NotConnected) failed because the received username len is too big ({}) while the maximum is {}, at [{}, {}]",
+                user_info.tcp_addr, _client_name_size, MAX_USERNAME_SIZE, file!(), line!()
+            ));
+        }
 
         // Get name string.
         let mut client_name_buf = vec![0u8; _client_name_size as usize];
@@ -560,6 +566,12 @@ impl UserTcpService {
             ));
         }
         let username_len = username_len.unwrap();
+        if username_len as usize > MAX_USERNAME_SIZE {
+            return HandleStateResult::HandleStateErr(format!(
+                "An error occurred, error: socket ({}) on state (Connected) failed because the received username len is too big ({}) while the maximum is {}, at [{}, {}]",
+                user_info.tcp_addr, username_len, MAX_USERNAME_SIZE, file!(), line!()
+            ));
+        }
 
         // Read username.
         let mut username_buf: Vec<u8> = vec![0u8; username_len as usize];
@@ -600,6 +612,12 @@ impl UserTcpService {
             ));
         }
         let message_len = message_len.unwrap();
+        if message_len as usize > MAX_MESSAGE_SIZE {
+            return HandleStateResult::HandleStateErr(format!(
+                "An error occurred, error: socket ({}) on state (Connected) failed because the received message len is too big ({}) while the maximum is {}, at [{}, {}]",
+                user_info.tcp_addr, message_len, MAX_MESSAGE_SIZE, file!(), line!()
+            ));
+        }
 
         // Read message.
         let mut message_buf: Vec<u8> = vec![0u8; message_len as usize];
