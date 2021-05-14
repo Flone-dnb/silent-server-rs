@@ -161,6 +161,7 @@ impl NetService {
                 let mut banned_addrs_guard = banned_addrs.lock().unwrap();
 
                 // leave only banned in the vec
+                // use 'Option' to move out of mutex
                 *banned_addrs_guard = Some(
                     banned_addrs_guard
                         .take()
