@@ -135,7 +135,7 @@ impl UserTcpService {
         current_u16: u16,
         user_info: &mut UserInfo,
         users: &Arc<Mutex<LinkedList<UserInfo>>>,
-        banned_addrs: &Arc<Mutex<Vec<BannedAddress>>>,
+        banned_addrs: &Arc<Mutex<Option<Vec<BannedAddress>>>>,
         user_enters_leaves_server_lock: &Arc<Mutex<()>>,
         logger: &Arc<Mutex<ServerLogger>>,
         server_password: &str,
@@ -177,7 +177,7 @@ impl UserTcpService {
         current_u16: u16,
         user_info: &mut UserInfo,
         users: &Arc<Mutex<LinkedList<UserInfo>>>,
-        banned_addrs: &Arc<Mutex<Vec<BannedAddress>>>,
+        banned_addrs: &Arc<Mutex<Option<Vec<BannedAddress>>>>,
         user_enters_leaves_server_lock: &Arc<Mutex<()>>,
         logger: &Arc<Mutex<ServerLogger>>,
         server_password: &str,
@@ -345,16 +345,17 @@ impl UserTcpService {
                     answer = ConnectServerAnswer::WrongPassword;
 
                     let mut banned_addrs_guard = banned_addrs.lock().unwrap();
-                    let mut found = false;
-                    for banned_addr in banned_addrs_guard.iter() {
-                        if banned_addr.addr == user_info.tcp_addr.ip() {
-                            found = true;
-                            break;
-                        }
-                    }
+                    // Find addr.
+                    let addr_entry = banned_addrs_guard
+                        .as_ref()
+                        .unwrap()
+                        .iter()
+                        .position(|banned_item| banned_item.addr == user_info.tcp_addr.ip());
 
-                    if !found {
-                        banned_addrs_guard.push(BannedAddress {
+                    if addr_entry.is_none() {
+                        // not found
+                        // add it
+                        banned_addrs_guard.as_mut().unwrap().push(BannedAddress {
                             banned_at: Local::now(),
                             addr: user_info.tcp_addr.ip(),
                         });
