@@ -135,6 +135,7 @@ impl UserTcpService {
         current_u16: u16,
         user_info: &mut UserInfo,
         users: &Arc<Mutex<LinkedList<UserInfo>>>,
+        banned_addrs: &Arc<Mutex<Vec<BannedAddress>>>,
         user_enters_leaves_server_lock: &Arc<Mutex<()>>,
         logger: &Arc<Mutex<ServerLogger>>,
         server_password: &str,
@@ -144,9 +145,10 @@ impl UserTcpService {
                 return self.handle_not_connected_state(
                     current_u16,
                     user_info,
-                    &users,
-                    &user_enters_leaves_server_lock,
-                    &logger,
+                    users,
+                    banned_addrs,
+                    user_enters_leaves_server_lock,
+                    logger,
                     server_password,
                 );
             }
@@ -175,6 +177,7 @@ impl UserTcpService {
         current_u16: u16,
         user_info: &mut UserInfo,
         users: &Arc<Mutex<LinkedList<UserInfo>>>,
+        banned_addrs: &Arc<Mutex<Vec<BannedAddress>>>,
         user_enters_leaves_server_lock: &Arc<Mutex<()>>,
         logger: &Arc<Mutex<ServerLogger>>,
         server_password: &str,
@@ -340,6 +343,22 @@ impl UserTcpService {
                 // Check if the password is correct.
                 if server_password != _password {
                     answer = ConnectServerAnswer::WrongPassword;
+
+                    let mut banned_addrs_guard = banned_addrs.lock().unwrap();
+                    let mut found = false;
+                    for banned_addr in banned_addrs_guard.iter() {
+                        if banned_addr.addr == user_info.tcp_addr.ip() {
+                            found = true;
+                            break;
+                        }
+                    }
+
+                    if !found {
+                        banned_addrs_guard.push(BannedAddress {
+                            banned_at: Local::now(),
+                            addr: user_info.tcp_addr.ip(),
+                        });
+                    }
                 }
             }
 

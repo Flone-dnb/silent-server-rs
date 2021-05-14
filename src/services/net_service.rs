@@ -42,11 +42,17 @@ impl UserInfo {
     }
 }
 
+pub struct BannedAddress {
+    pub banned_at: DateTime<Local>,
+    pub addr: IpAddr,
+}
+
 pub struct NetService {
     pub server_config: ServerConfig,
     connected_users: Arc<Mutex<LinkedList<UserInfo>>>,
     logger: Arc<Mutex<ServerLogger>>,
     user_enters_leaves_server_lock: Arc<Mutex<()>>,
+    banned_addrs: Arc<Mutex<Vec<BannedAddress>>>,
     is_running: bool,
 }
 
@@ -58,6 +64,7 @@ impl NetService {
             connected_users: Arc::new(Mutex::new(LinkedList::new())),
             user_enters_leaves_server_lock: Arc::new(Mutex::new(())),
             logger: Arc::new(Mutex::new(ServerLogger::new())),
+            banned_addrs: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -84,12 +91,14 @@ impl NetService {
         let server_config_copy = self.server_config.clone();
         let logger_copy = Arc::clone(&self.logger);
         let users_copy = Arc::clone(&self.connected_users);
+        let banned_addrs_copy = Arc::clone(&self.banned_addrs);
         let user_io_lock_copy = Arc::clone(&self.user_enters_leaves_server_lock);
         thread::spawn(move || {
             NetService::service(
                 server_config_copy,
                 logger_copy,
                 users_copy,
+                banned_addrs_copy,
                 user_io_lock_copy,
             )
         });
@@ -99,6 +108,7 @@ impl NetService {
         server_config: ServerConfig,
         logger: Arc<Mutex<ServerLogger>>,
         users: Arc<Mutex<LinkedList<UserInfo>>>,
+        banned_addrs: Arc<Mutex<Vec<BannedAddress>>>,
         user_enters_leaves_server_lock: Arc<Mutex<()>>,
     ) {
         let init_time = Local::now();
@@ -146,6 +156,34 @@ impl NetService {
             }
 
             let (socket, addr) = accept_result.unwrap();
+
+            {
+                let mut banned_addrs_guard = banned_addrs.lock().unwrap();
+                let mut found_ready = false;
+                let mut found_skip = false;
+                let mut found_at = 0usize;
+
+                for (i, banned_addr) in banned_addrs_guard.iter().enumerate() {
+                    if banned_addr.addr == addr.ip() {
+                        let time_diff = Local::now() - banned_addr.banned_at;
+                        if time_diff.num_seconds() < PASSWORD_RETRY_DELAY_SEC as i64 {
+                            found_skip = true;
+                            break;
+                        } else {
+                            found_ready = true;
+                            found_at = i;
+                            break;
+                        }
+                    }
+                }
+
+                if found_ready {
+                    banned_addrs_guard.remove(found_at);
+                } else if found_skip {
+                    continue;
+                }
+            }
+
             if let Err(e) = socket.set_nodelay(true) {
                 println!(
                     "socket.set_nodelay() failed on addr ({}), error: {} at [{}, {}]",
@@ -169,6 +207,7 @@ impl NetService {
 
             let logger_copy = Arc::clone(&logger);
             let users_copy = Arc::clone(&users);
+            let banned_addrs_copy = Arc::clone(&banned_addrs);
             let user_io_lock_copy = Arc::clone(&user_enters_leaves_server_lock);
             let server_password_copy = server_config.server_password.clone();
             thread::spawn(move || {
@@ -177,6 +216,7 @@ impl NetService {
                     addr,
                     logger_copy,
                     users_copy,
+                    banned_addrs_copy,
                     user_io_lock_copy,
                     server_password_copy,
                     init_time,
@@ -190,6 +230,7 @@ impl NetService {
         addr: SocketAddr,
         logger: Arc<Mutex<ServerLogger>>,
         users: Arc<Mutex<LinkedList<UserInfo>>>,
+        banned_addrs: Arc<Mutex<Vec<BannedAddress>>>,
         user_enters_leaves_server_lock: Arc<Mutex<()>>,
         server_password: String,
         init_time: DateTime<Local>,
@@ -239,6 +280,7 @@ impl NetService {
                 _var_u16,
                 &mut user_info,
                 &users,
+                &banned_addrs,
                 &user_enters_leaves_server_lock,
                 &logger,
                 &server_password,
