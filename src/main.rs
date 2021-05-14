@@ -8,6 +8,7 @@ use std::io::*;
 mod config_io;
 mod global_params;
 mod services;
+use global_params::*;
 use services::net_service::NetService;
 
 fn main() {
@@ -64,8 +65,15 @@ fn main() {
                     .take(0)
                     .chain(input.chars().skip("config.password = ".chars().count()))
                     .collect();
-                net_service.server_config.server_password = password_str;
-                net_service.server_config.save_config().unwrap();
+                if password_str.chars().count() > MAX_PASSWORD_SIZE {
+                    println!(
+                        "the password is too big (max length: {})",
+                        MAX_PASSWORD_SIZE
+                    );
+                } else {
+                    net_service.server_config.server_password = password_str;
+                    net_service.server_config.save_config().unwrap();
+                }
             } else {
                 println!("command '{}' not found", input);
             }
