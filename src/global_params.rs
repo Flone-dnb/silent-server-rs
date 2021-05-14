@@ -6,6 +6,7 @@ pub const CONFIG_FILE_VERSION: u64 = 0;
 // these should be in sync with the client's global params
 pub const MAX_MESSAGE_SIZE: usize = 500;
 pub const MAX_USERNAME_SIZE: usize = 25;
+pub const MAX_PASSWORD_SIZE: usize = 20;
 pub const SPAM_PROTECTION_SEC: usize = 2; // client can send only 1 message per SPAM_PROTECTION_SEC
 
 pub const SERVER_DEFAULT_PORT: u16 = 51337;

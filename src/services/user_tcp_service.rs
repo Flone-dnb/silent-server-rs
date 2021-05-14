@@ -299,6 +299,13 @@ impl UserTcpService {
 
         let mut _password = String::new();
         if _password_size != 0 {
+            if _password_size as usize > MAX_PASSWORD_SIZE {
+                return HandleStateResult::HandleStateErr(format!(
+                    "An error occurred, error: socket ({}) on state (NotConnected) failed because the received password len is too big ({}) while the maximum is {}, at [{}, {}]",
+                    user_info.tcp_addr, _password_size, MAX_PASSWORD_SIZE, file!(), line!()
+                ));
+            }
+
             // Get password string.
             let mut password_buf = vec![0u8; _password_size as usize];
             loop {
