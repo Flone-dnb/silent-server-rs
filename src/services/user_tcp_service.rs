@@ -1,5 +1,6 @@
 // External.
 use bytevec::{ByteDecodable, ByteEncodable};
+use chrono::prelude::*;
 use num_derive::FromPrimitive;
 use num_derive::ToPrimitive;
 use num_traits::cast::FromPrimitive;
@@ -53,7 +54,8 @@ pub enum HandleStateResult {
     Ok,
     ReadErr(IoResult),
     HandleStateErr(String),
-    NonCriticalErr(String), // not a critical error
+    NonCriticalErr(String),
+    Spam(String),
 }
 
 pub struct UserTcpService {
@@ -633,6 +635,17 @@ impl UserTcpService {
                 res => return HandleStateResult::ReadErr(res),
             }
         }
+
+        // Check spam protection.
+        let time_diff = Local::now() - user_info.last_text_message_sent;
+        if time_diff.num_seconds() < SPAM_PROTECTION_SEC as i64 {
+            return HandleStateResult::Spam(format!(
+                "info: the user '{}' tried sending text messages too quick.",
+                user_info.username
+            ));
+        }
+
+        user_info.last_text_message_sent = Local::now();
 
         // Combine all to one buffer.
         let mut out_buf: Vec<u8> = Vec::new();

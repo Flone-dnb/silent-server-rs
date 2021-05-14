@@ -1,5 +1,6 @@
 // External.
 use bytevec::ByteDecodable;
+use chrono::prelude::*;
 
 // Std.
 use std::collections::LinkedList;
@@ -18,6 +19,7 @@ pub struct UserInfo {
     pub tcp_addr: SocketAddr,
     pub tcp_socket: TcpStream,
     pub tcp_io_mutex: Arc<Mutex<()>>,
+    pub last_text_message_sent: DateTime<Local>,
 }
 impl UserInfo {
     pub fn clone(&self) -> Result<UserInfo, String> {
@@ -35,6 +37,7 @@ impl UserInfo {
             tcp_addr: self.tcp_addr.clone(),
             tcp_socket: tcp_socket_clone.unwrap(),
             tcp_io_mutex: Arc::clone(&self.tcp_io_mutex),
+            last_text_message_sent: Local::now(),
         })
     }
 }
@@ -188,6 +191,7 @@ impl NetService {
             tcp_addr: addr,
             tcp_socket: socket,
             tcp_io_mutex: Arc::new(Mutex::new(())),
+            last_text_message_sent: Local::now(),
         };
 
         // Read data from the socket.
@@ -244,7 +248,10 @@ impl NetService {
                     println!("{} at [{}, {}]", msg, file!(), line!());
                     break;
                 }
-                _ => {}
+                HandleStateResult::Spam(msg) => {
+                    println!("{}", msg);
+                }
+                HandleStateResult::Ok => {}
             };
         }
 
