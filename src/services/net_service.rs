@@ -101,6 +101,8 @@ impl NetService {
         users: Arc<Mutex<LinkedList<UserInfo>>>,
         user_enters_leaves_server_lock: Arc<Mutex<()>>,
     ) {
+        let init_time = Local::now();
+
         let listener_socket = TcpListener::bind(format!("127.0.0.1:{}", server_config.server_port));
 
         if let Err(e) = listener_socket {
@@ -177,6 +179,7 @@ impl NetService {
                     users_copy,
                     user_io_lock_copy,
                     server_password_copy,
+                    init_time,
                 )
             });
         }
@@ -189,6 +192,7 @@ impl NetService {
         users: Arc<Mutex<LinkedList<UserInfo>>>,
         user_enters_leaves_server_lock: Arc<Mutex<()>>,
         server_password: String,
+        init_time: DateTime<Local>,
     ) {
         let mut buf_u16 = [0u8; 2];
         let mut _var_u16 = 0u16;
@@ -200,7 +204,7 @@ impl NetService {
             tcp_addr: addr,
             tcp_socket: socket,
             tcp_io_mutex: Arc::new(Mutex::new(())),
-            last_text_message_sent: Local::now(),
+            last_text_message_sent: init_time,
         };
 
         // Read data from the socket.
@@ -257,9 +261,6 @@ impl NetService {
                 HandleStateResult::UserNotConnectedReason(msg) => {
                     println!("{}", msg);
                     break;
-                }
-                HandleStateResult::Spam(msg) => {
-                    println!("{}", msg);
                 }
                 HandleStateResult::Ok => {}
             };

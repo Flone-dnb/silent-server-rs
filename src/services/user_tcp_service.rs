@@ -56,7 +56,6 @@ pub enum HandleStateResult {
     IoErr(IoResult),
     HandleStateErr(String),
     UserNotConnectedReason(String),
-    Spam(String),
 }
 
 pub struct UserTcpService {
@@ -717,9 +716,10 @@ impl UserTcpService {
         // Check spam protection.
         let time_diff = Local::now() - user_info.last_text_message_sent;
         if time_diff.num_seconds() < SPAM_PROTECTION_SEC as i64 {
-            return HandleStateResult::Spam(format!(
-                "info: the user '{}' tried sending text messages too quick.",
-                user_info.username
+            // can't happen with the default client version
+            return HandleStateResult::HandleStateErr(format!(
+                "the user '{}' tried sending text messages too quick (which should not happen with the default client version) at [{}, {}]",
+                user_info.username, file!(), line!()
             ));
         }
 
