@@ -29,6 +29,7 @@ enum ConnectServerAnswer {
     Ok = 0,
     WrongVersion = 1,
     UsernameTaken = 2,
+    WrongPassword = 3,
 }
 
 #[derive(FromPrimitive, ToPrimitive, PartialEq)]
@@ -52,9 +53,9 @@ pub enum IoResult {
 
 pub enum HandleStateResult {
     Ok,
-    ReadErr(IoResult),
+    IoErr(IoResult),
     HandleStateErr(String),
-    NonCriticalErr(String),
+    UserNotConnectedReason(String),
     Spam(String),
 }
 
@@ -137,6 +138,7 @@ impl UserTcpService {
         users: &Arc<Mutex<LinkedList<UserInfo>>>,
         user_enters_leaves_server_lock: &Arc<Mutex<()>>,
         logger: &Arc<Mutex<ServerLogger>>,
+        server_password: &str,
     ) -> HandleStateResult {
         match self.user_state {
             UserState::NotConnected => {
@@ -146,6 +148,7 @@ impl UserTcpService {
                     &users,
                     &user_enters_leaves_server_lock,
                     &logger,
+                    server_password,
                 );
             }
             UserState::Connected => {
@@ -175,6 +178,7 @@ impl UserTcpService {
         users: &Arc<Mutex<LinkedList<UserInfo>>>,
         user_enters_leaves_server_lock: &Arc<Mutex<()>>,
         logger: &Arc<Mutex<ServerLogger>>,
+        server_password: &str,
     ) -> HandleStateResult {
         if current_u16 as u32 > MAX_VERSION_STRING_LENGTH {
             return HandleStateResult::HandleStateErr(format!(
@@ -189,14 +193,14 @@ impl UserTcpService {
         loop {
             match self.read_from_socket(user_info, &mut client_version_buf) {
                 IoResult::WouldBlock => {
-                    thread::sleep(Duration::from_millis(INTERVAL_TCP_CONNECT_MS));
+                    thread::sleep(Duration::from_millis(INTERVAL_TCP_MESSAGE_MS));
                     continue;
                 }
                 IoResult::Ok(_bytes) => {
                     let res = std::str::from_utf8(&client_version_buf);
                     if let Err(e) = res {
                         return HandleStateResult::HandleStateErr(format!(
-                            "std::str::from_utf8() failed, error: socket ({}) on state (NotConnected) failed on 'client_version_buf' (error: {}) at [{}, {}]",
+                            "std::str::from_utf8() failed, error: socket ({}) on state (NotConnected) failed (error: {}) at [{}, {}]",
                             user_info.tcp_addr, e, file!(), line!()
                         ));
                     }
@@ -205,7 +209,7 @@ impl UserTcpService {
 
                     break;
                 }
-                res => return HandleStateResult::ReadErr(res),
+                res => return HandleStateResult::IoErr(res),
             };
         }
 
@@ -215,14 +219,14 @@ impl UserTcpService {
         loop {
             match self.read_from_socket(user_info, &mut client_name_size_buf) {
                 IoResult::WouldBlock => {
-                    thread::sleep(Duration::from_millis(INTERVAL_TCP_CONNECT_MS));
+                    thread::sleep(Duration::from_millis(INTERVAL_TCP_MESSAGE_MS));
                     continue;
                 }
                 IoResult::Ok(_bytes) => {
                     let res = u16::decode::<u16>(&client_name_size_buf);
                     if let Err(e) = res {
                         return HandleStateResult::HandleStateErr(format!(
-                            "u16::decode::<u16>() failed, error: socket ({}) failed to decode 'client_name_size_buf' (error: {}) at [{}, {}]",
+                            "u16::decode::<u16>() failed, error: socket ({}) failed to decode (error: {}) at [{}, {}]",
                             user_info.tcp_addr, e, file!(), line!()
                         ));
                     }
@@ -231,7 +235,7 @@ impl UserTcpService {
 
                     break;
                 }
-                res => return HandleStateResult::ReadErr(res),
+                res => return HandleStateResult::IoErr(res),
             }
         }
         if _client_name_size as usize > MAX_USERNAME_SIZE {
@@ -247,14 +251,14 @@ impl UserTcpService {
         loop {
             match self.read_from_socket(user_info, &mut client_name_buf) {
                 IoResult::WouldBlock => {
-                    thread::sleep(Duration::from_millis(INTERVAL_TCP_CONNECT_MS));
+                    thread::sleep(Duration::from_millis(INTERVAL_TCP_MESSAGE_MS));
                     continue;
                 }
                 IoResult::Ok(_bytes) => {
                     let res = std::str::from_utf8(&client_name_buf);
                     if let Err(e) = res {
                         return HandleStateResult::HandleStateErr(format!(
-                            "std::str::from_utf8() failed, error: socket ({}) on state (NotConnected) failed on 'client_name_buf' (error: {}) at [{}, {}]",
+                            "std::str::from_utf8() failed, error: socket ({}) on state (NotConnected) failed (error: {}) at [{}, {}]",
                             user_info.tcp_addr, e, file!(), line!()
                         ));
                     }
@@ -263,14 +267,75 @@ impl UserTcpService {
 
                     break;
                 }
-                res => return HandleStateResult::ReadErr(res),
+                res => return HandleStateResult::IoErr(res),
             };
+        }
+
+        // Get password string size.
+        let mut password_size_buf = vec![0u8; std::mem::size_of::<u16>()];
+        let mut _password_size = 0u16;
+        loop {
+            match self.read_from_socket(user_info, &mut password_size_buf) {
+                IoResult::WouldBlock => {
+                    thread::sleep(Duration::from_millis(INTERVAL_TCP_MESSAGE_MS));
+                    continue;
+                }
+                IoResult::Ok(_bytes) => {
+                    let res = u16::decode::<u16>(&password_size_buf);
+                    if let Err(e) = res {
+                        return HandleStateResult::HandleStateErr(format!(
+                            "u16::decode::<u16>() failed, error: socket ({}) failed to decode (error: {}) at [{}, {}]",
+                            user_info.tcp_addr, e, file!(), line!()
+                        ));
+                    }
+
+                    _password_size = res.unwrap();
+
+                    break;
+                }
+                res => return HandleStateResult::IoErr(res),
+            }
+        }
+
+        let mut _password = String::new();
+        if _password_size != 0 {
+            // Get password string.
+            let mut password_buf = vec![0u8; _password_size as usize];
+            loop {
+                match self.read_from_socket(user_info, &mut password_buf) {
+                    IoResult::WouldBlock => {
+                        thread::sleep(Duration::from_millis(INTERVAL_TCP_MESSAGE_MS));
+                        continue;
+                    }
+                    IoResult::Ok(_bytes) => {
+                        let res = std::str::from_utf8(&password_buf);
+                        if let Err(e) = res {
+                            return HandleStateResult::HandleStateErr(format!(
+                                "std::str::from_utf8() failed, error: socket ({}) on state (NotConnected) failed (error: {}) at [{}, {}]",
+                                user_info.tcp_addr, e, file!(), line!()
+                            ));
+                        }
+
+                        _password = String::from(res.unwrap());
+
+                        break;
+                    }
+                    res => return HandleStateResult::IoErr(res),
+                };
+            }
         }
 
         let mut answer = ConnectServerAnswer::Ok;
 
         {
             let _guard = user_enters_leaves_server_lock.lock().unwrap();
+
+            if !server_password.is_empty() {
+                // Check if the password is correct.
+                if server_password != _password {
+                    answer = ConnectServerAnswer::WrongPassword;
+                }
+            }
 
             // Check if the client version is supported.
             if _client_version_string != SUPPORTED_CLIENT_VERSION {
@@ -317,13 +382,13 @@ impl UserTcpService {
             loop {
                 match self.write_to_socket(user_info, &mut answer_buf) {
                     IoResult::WouldBlock => {
-                        thread::sleep(Duration::from_millis(INTERVAL_TCP_CONNECT_MS));
+                        thread::sleep(Duration::from_millis(INTERVAL_TCP_MESSAGE_MS));
                         continue;
                     }
                     IoResult::Ok(_bytes) => {
                         break;
                     }
-                    res => return HandleStateResult::ReadErr(res),
+                    res => return HandleStateResult::IoErr(res),
                 }
             }
 
@@ -342,13 +407,13 @@ impl UserTcpService {
                 loop {
                     match self.write_to_socket(user_info, &mut answer_buf) {
                         IoResult::WouldBlock => {
-                            thread::sleep(Duration::from_millis(INTERVAL_TCP_CONNECT_MS));
+                            thread::sleep(Duration::from_millis(INTERVAL_TCP_MESSAGE_MS));
                             continue;
                         }
                         IoResult::Ok(_bytes) => {
                             break;
                         }
-                        res => return HandleStateResult::ReadErr(res),
+                        res => return HandleStateResult::IoErr(res),
                     }
                 }
 
@@ -356,13 +421,13 @@ impl UserTcpService {
                 loop {
                     match self.write_to_socket(user_info, &mut supported_client_str) {
                         IoResult::WouldBlock => {
-                            thread::sleep(Duration::from_millis(INTERVAL_TCP_CONNECT_MS));
+                            thread::sleep(Duration::from_millis(INTERVAL_TCP_MESSAGE_MS));
                             continue;
                         }
                         IoResult::Ok(_bytes) => {
                             break;
                         }
-                        res => return HandleStateResult::ReadErr(res),
+                        res => return HandleStateResult::IoErr(res),
                     }
                 }
             }
@@ -370,15 +435,21 @@ impl UserTcpService {
             match answer {
                 ConnectServerAnswer::Ok => {}
                 ConnectServerAnswer::WrongVersion => {
-                    return HandleStateResult::NonCriticalErr(format!(
-                        "Non-critical error occurred, error: socket ({}) on state (NotConnected) failed with client version ({}) which is not supported at [{}, {}]",
-                        user_info.tcp_addr, _client_version_string, file!(), line!()
+                    return HandleStateResult::UserNotConnectedReason(format!(
+                        "socket ({}) on state (NotConnected) was not connected, reason: wrong client version, client version ({}) is not supported.",
+                        user_info.tcp_addr, _client_version_string,
+                    ));
+                }
+                ConnectServerAnswer::WrongPassword => {
+                    return HandleStateResult::UserNotConnectedReason(format!(
+                        "socket ({}) on state (NotConnected) was not connected, reason: wrong password, received password ({}).",
+                        user_info.tcp_addr, _password
                     ));
                 }
                 ConnectServerAnswer::UsernameTaken => {
-                    return HandleStateResult::NonCriticalErr(format!(
-                        "Non-critical error occurred, error: socket ({}) on state (NotConnected) username {} is not unique at [{}, {}]",
-                        user_info.tcp_addr, _client_name_string, file!(), line!()
+                    return HandleStateResult::UserNotConnectedReason(format!(
+                        "socket ({}) on state (NotConnected) was not connected, reason: username {} is not unique.",
+                        user_info.tcp_addr, _client_name_string,
                     ));
                 }
             }
@@ -421,13 +492,13 @@ impl UserTcpService {
             loop {
                 match self.write_to_socket(user_info, &mut info_out_buf) {
                     IoResult::WouldBlock => {
-                        thread::sleep(Duration::from_millis(INTERVAL_TCP_CONNECT_MS));
+                        thread::sleep(Duration::from_millis(INTERVAL_TCP_MESSAGE_MS));
                         continue;
                     }
                     IoResult::Ok(_) => {
                         break;
                     }
-                    res => return HandleStateResult::ReadErr(res),
+                    res => return HandleStateResult::IoErr(res),
                 }
             }
 
@@ -472,7 +543,7 @@ impl UserTcpService {
                             IoResult::Ok(_) => {
                                 break;
                             }
-                            res => return HandleStateResult::ReadErr(res),
+                            res => return HandleStateResult::IoErr(res),
                         }
                     }
                 }
@@ -555,7 +626,7 @@ impl UserTcpService {
                 IoResult::Ok(_) => {
                     break;
                 }
-                res => return HandleStateResult::ReadErr(res),
+                res => return HandleStateResult::IoErr(res),
             }
         }
         let username_len = u16::decode::<u16>(&username_len_buf);
@@ -586,7 +657,7 @@ impl UserTcpService {
                 IoResult::Ok(_) => {
                     break;
                 }
-                res => return HandleStateResult::ReadErr(res),
+                res => return HandleStateResult::IoErr(res),
             }
         }
 
@@ -601,7 +672,7 @@ impl UserTcpService {
                 IoResult::Ok(_) => {
                     break;
                 }
-                res => return HandleStateResult::ReadErr(res),
+                res => return HandleStateResult::IoErr(res),
             }
         }
         let message_len = u16::decode::<u16>(&message_len_buf);
@@ -632,7 +703,7 @@ impl UserTcpService {
                 IoResult::Ok(_) => {
                     break;
                 }
-                res => return HandleStateResult::ReadErr(res),
+                res => return HandleStateResult::IoErr(res),
             }
         }
 
@@ -665,7 +736,7 @@ impl UserTcpService {
                         continue;
                     }
                     IoResult::Ok(_) => {}
-                    res => return HandleStateResult::ReadErr(res),
+                    res => return HandleStateResult::IoErr(res),
                 }
             }
         }
@@ -735,7 +806,7 @@ impl UserTcpService {
                         IoResult::Ok(_) => {
                             break;
                         }
-                        res => return HandleStateResult::ReadErr(res),
+                        res => return HandleStateResult::IoErr(res),
                     }
                 }
             }

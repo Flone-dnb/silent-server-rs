@@ -168,8 +168,16 @@ impl NetService {
             let logger_copy = Arc::clone(&logger);
             let users_copy = Arc::clone(&users);
             let user_io_lock_copy = Arc::clone(&user_enters_leaves_server_lock);
+            let server_password_copy = server_config.server_password.clone();
             thread::spawn(move || {
-                NetService::handle_user(socket, addr, logger_copy, users_copy, user_io_lock_copy)
+                NetService::handle_user(
+                    socket,
+                    addr,
+                    logger_copy,
+                    users_copy,
+                    user_io_lock_copy,
+                    server_password_copy,
+                )
             });
         }
     }
@@ -180,6 +188,7 @@ impl NetService {
         logger: Arc<Mutex<ServerLogger>>,
         users: Arc<Mutex<LinkedList<UserInfo>>>,
         user_enters_leaves_server_lock: Arc<Mutex<()>>,
+        server_password: String,
     ) {
         let mut buf_u16 = [0u8; 2];
         let mut _var_u16 = 0u16;
@@ -228,8 +237,9 @@ impl NetService {
                 &users,
                 &user_enters_leaves_server_lock,
                 &logger,
+                &server_password,
             ) {
-                HandleStateResult::ReadErr(read_e) => match read_e {
+                HandleStateResult::IoErr(read_e) => match read_e {
                     IoResult::FIN => {
                         is_error = false;
                         break;
@@ -244,8 +254,8 @@ impl NetService {
                     println!("{} at [{}, {}]", msg, file!(), line!());
                     break;
                 }
-                HandleStateResult::NonCriticalErr(msg) => {
-                    println!("{} at [{}, {}]", msg, file!(), line!());
+                HandleStateResult::UserNotConnectedReason(msg) => {
+                    println!("{}", msg);
                     break;
                 }
                 HandleStateResult::Spam(msg) => {
