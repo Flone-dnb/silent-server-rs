@@ -90,9 +90,29 @@ impl ServerLogger {
 }
 
 #[derive(Debug)]
+pub struct RoomInfo {
+    pub room_name: String,
+}
+
+impl Clone for RoomInfo {
+    fn clone(&self) -> Self {
+        RoomInfo {
+            room_name: self.room_name.clone(),
+        }
+    }
+}
+
+impl RoomInfo {
+    fn new(room_name: String) -> Self {
+        RoomInfo { room_name }
+    }
+}
+
+#[derive(Debug)]
 pub struct ServerConfig {
     pub server_port: u16,
     pub server_password: String,
+    pub rooms: Vec<RoomInfo>,
     pub config_file_path: String,
     pub log_file_path: String,
 }
@@ -131,7 +151,65 @@ impl ServerConfig {
             server_password: self.server_password.clone(),
             config_file_path: self.config_file_path.clone(),
             log_file_path: self.log_file_path.clone(),
+            rooms: self.rooms.clone(),
         }
+    }
+
+    pub fn clear_rooms(&mut self) {
+        self.rooms.clear();
+        self.rooms
+            .push(RoomInfo::new(String::from(DEFAULT_ROOM_NAME)));
+    }
+
+    pub fn add_room(&mut self, room_name: String) -> Result<(), String> {
+        if room_name.chars().count() > MAX_USERNAME_SIZE {
+            return Err(format!(
+                "room name is too long (max. len. is {})",
+                MAX_USERNAME_SIZE
+            ));
+        }
+
+        // find room with this name
+        let room_entry = self
+            .rooms
+            .iter()
+            .position(|room_info| room_info.room_name == room_name);
+        if room_entry.is_some() {
+            return Err(String::from("room name is not unique"));
+        }
+
+        self.rooms.push(RoomInfo::new(room_name));
+
+        if self.rooms.len() == std::u16::MAX as usize {
+            return Err(String::from("too many rooms created"));
+        }
+
+        Ok(())
+    }
+
+    pub fn remove_room(&mut self, room_name: String) -> Result<(), String> {
+        let mut found = false;
+        let mut found_at = 0usize;
+        for (i, room) in self.rooms.iter().enumerate() {
+            if room.room_name == room_name {
+                found = true;
+                found_at = i;
+                break;
+            }
+        }
+
+        if !found {
+            return Err(format!("room ({}) not found", room_name));
+        }
+
+        if self.rooms.len() == 1 && self.rooms[0].room_name == DEFAULT_ROOM_NAME {
+            return Err(String::from(
+                "can't remove lobby room, it should always exist",
+            ));
+        }
+        self.rooms.remove(found_at);
+
+        Ok(())
     }
 
     pub fn reset_config(&mut self) -> Self {
@@ -171,7 +249,7 @@ impl ServerConfig {
         let mut buf = vec![0u8; std::mem::size_of::<u16>()];
         if let Err(e) = config_file.read(&mut buf) {
             return Err(format!(
-                "File::read() failed, error: can't read magic number from config file (error: {}) at [{}, {}]",
+                "File::read() failed, error: can't read from config file (error: {}) at [{}, {}]",
                 e,
                 file!(),
                 line!()
@@ -192,7 +270,7 @@ impl ServerConfig {
         let mut buf = vec![0u8; std::mem::size_of::<u64>()];
         if let Err(e) = config_file.read(&mut buf) {
             return Err(format!(
-                "File::read() failed, error: can't read config version from config file (error: {}) at [{}, {}]",
+                "File::read() failed, error: can't read from config file (error: {}) at [{}, {}]",
                 e,
                 file!(),
                 line!()
@@ -202,10 +280,10 @@ impl ServerConfig {
         let config_version = u64::decode::<u64>(&buf).unwrap();
 
         // Read server port.
-        let mut buf = vec![0u8; 2];
+        let mut buf = vec![0u8; std::mem::size_of::<u16>()];
         if let Err(e) = config_file.read(&mut buf) {
             return Err(format!(
-                "File::read() failed, error: can't read 'server_port' from config file (error: {}) at [{}, {}]",
+                "File::read() failed, error: can't read from config file (error: {}) at [{}, {}]",
                 e,
                 file!(),
                 line!()
@@ -214,13 +292,15 @@ impl ServerConfig {
         self.server_port = u16::decode::<u16>(&buf).unwrap();
 
         // Read server password size.
-        let mut buf = vec![0u8; 4];
+        let mut buf = vec![0u8; std::mem::size_of::<u32>()];
         let mut _password_byte_count = 0u32;
         if let Err(e) = config_file.read(&mut buf) {
-            return Err(format!("File::read() failed, error: can't read server's password size from config file (error: {}) at [{}, {}]",
-            e,
-            file!(),
-            line!()));
+            return Err(format!(
+                "File::read() failed, error: can't read from config file (error: {}) at [{}, {}]",
+                e,
+                file!(),
+                line!()
+            ));
         }
         _password_byte_count = u32::decode::<u32>(&buf).unwrap();
 
@@ -228,19 +308,67 @@ impl ServerConfig {
         let mut buf = vec![0u8; _password_byte_count as usize];
         if _password_byte_count > 0 {
             if let Err(e) = config_file.read(&mut buf) {
-                return Err(format!("File::read() failed, error: can't read 'server_password' from config file (error: {}) at [{}, {}]",
+                return Err(format!("File::read() failed, error: can't read from config file (error: {}) at [{}, {}]",
                 e,
                 file!(),
                 line!()));
             }
             let server_pass = std::str::from_utf8(&buf);
             if let Err(e) = server_pass {
-                return Err(format!("std::str::from_utf8() failed, error: can't convert raw bytes of 'server_password' to string (error: {}) at [{}, {}]",
+                return Err(format!("std::str::from_utf8() failed, error: can't convert raw bytes to string (error: {}) at [{}, {}]",
                 e,
                 file!(),
                 line!()));
             }
             self.server_password = String::from(server_pass.unwrap());
+        }
+
+        // Read room count.
+        let mut buf = vec![0u8; std::mem::size_of::<u16>()];
+        let mut _room_count = 0u16;
+        if let Err(e) = config_file.read(&mut buf) {
+            return Err(format!(
+                "File::read() failed, error: can't read from config file (error: {}) at [{}, {}]",
+                e,
+                file!(),
+                line!()
+            ));
+        }
+        _room_count = u16::decode::<u16>(&buf).unwrap();
+
+        self.rooms.clear();
+
+        for _ in 0.._room_count {
+            // Read room name len.
+            let mut buf = vec![0u8; std::mem::size_of::<u8>()];
+            let mut _room_name_len = 0u8;
+            if let Err(e) = config_file.read(&mut buf) {
+                return Err(format!(
+                    "File::read() failed, error: can't read from config file (error: {}) at [{}, {}]",
+                    e,
+                    file!(),
+                    line!()
+                ));
+            }
+            _room_name_len = u8::decode::<u8>(&buf).unwrap();
+
+            // Read room name.
+            let mut buf = vec![0u8; _room_name_len as usize];
+            if let Err(e) = config_file.read(&mut buf) {
+                return Err(format!("File::read() failed, error: can't read from config file (error: {}) at [{}, {}]",
+                e,
+                file!(),
+                line!()));
+            }
+            let room_name = std::str::from_utf8(&buf);
+            if let Err(e) = room_name {
+                return Err(format!("std::str::from_utf8() failed, error: can't convert raw bytes to string (error: {}) at [{}, {}]",
+                e,
+                file!(),
+                line!()));
+            }
+            self.rooms
+                .push(RoomInfo::new(String::from(room_name.unwrap())));
         }
 
         //
@@ -287,7 +415,7 @@ impl ServerConfig {
         let magic_number = CONFIG_FILE_MAGIC_NUMBER;
         if let Err(e) = config_file.write(&magic_number.encode::<u16>().unwrap()) {
             return Err(
-                format!("File::write() failed, error: can't write 'magic_number' to new config file (error: {}) at [{}, {}]",
+                format!("File::write() failed, error: can't write to new config file (error: {}) at [{}, {}]",
             e,
             file!(),
             line!()),
@@ -297,7 +425,7 @@ impl ServerConfig {
         // Write config file version.
         let config_version = CONFIG_FILE_VERSION;
         if let Err(e) = config_file.write(&config_version.encode::<u64>().unwrap()) {
-            return Err(format!("File::write() failed, error: can't write 'config_version' to new config file (error: {}) at [{}, {}]",
+            return Err(format!("File::write() failed, error: can't write to new config file (error: {}) at [{}, {}]",
             e,
             file!(),
             line!()));
@@ -305,7 +433,7 @@ impl ServerConfig {
 
         // Write server port.
         if let Err(e) = config_file.write(&self.server_port.encode::<u16>().unwrap()) {
-            return Err(format!("File::write() failed, error: can't write 'server_port' to new config file (error: {}) at [{}, {}]",
+            return Err(format!("File::write() failed, error: can't write to new config file (error: {}) at [{}, {}]",
             e,
             file!(),
             line!()));
@@ -314,7 +442,7 @@ impl ServerConfig {
         // Write server password size.
         let pass_size: u32 = self.server_password.len() as u32;
         if let Err(e) = config_file.write(&pass_size.encode::<u32>().unwrap()) {
-            return Err(format!("File::write() failed, error: can't write server's password size to new config file (error: {}) at [{}, {}]",
+            return Err(format!("File::write() failed, error: can't write to new config file (error: {}) at [{}, {}]",
             e,
             file!(),
             line!()));
@@ -323,7 +451,36 @@ impl ServerConfig {
         // Write server password.
         if self.server_password.len() > 0 {
             if let Err(e) = config_file.write(self.server_password.as_bytes()) {
-                return Err(format!("File::write() failed, error: can't write 'server_password' to new config file (error: {}) at [{}, {}]",
+                return Err(format!("File::write() failed, error: can't write to new config file (error: {}) at [{}, {}]",
+                e,
+                file!(),
+                line!()));
+            }
+        }
+
+        // Write room count.
+        let room_count = self.rooms.len() as u16;
+        if let Err(e) = config_file.write(&room_count.encode::<u16>().unwrap()) {
+            return Err(format!("File::write() failed, error: can't write to new config file (error: {}) at [{}, {}]",
+            e,
+            file!(),
+            line!()));
+        }
+
+        // Write rooms.
+        for room in self.rooms.iter() {
+            // Write room name len.
+            let room_name_len = room.room_name.len() as u8;
+            if let Err(e) = config_file.write(&room_name_len.encode::<u8>().unwrap()) {
+                return Err(format!("File::write() failed, error: can't write to new config file (error: {}) at [{}, {}]",
+                e,
+                file!(),
+                line!()));
+            }
+
+            // Write room name.
+            if let Err(e) = config_file.write(room.room_name.as_bytes()) {
+                return Err(format!("File::write() failed, error: can't write to new config file (error: {}) at [{}, {}]",
                 e,
                 file!(),
                 line!()));
@@ -334,11 +491,18 @@ impl ServerConfig {
     }
 
     fn default() -> Self {
+        let default_rooms: Vec<RoomInfo> = vec![
+            RoomInfo::new(String::from(DEFAULT_ROOM_NAME)),
+            RoomInfo::new(String::from("Room 1")),
+            RoomInfo::new(String::from("Room 2")),
+            RoomInfo::new(String::from("Room 3")),
+        ];
         ServerConfig {
             server_port: SERVER_DEFAULT_PORT,
             server_password: String::from(""),
             config_file_path: ServerConfig::get_config_file_path().unwrap(),
             log_file_path: ServerConfig::get_config_file_dir().unwrap() + LOG_FILE_NAME,
+            rooms: default_rooms,
         }
     }
 

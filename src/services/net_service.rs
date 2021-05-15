@@ -16,6 +16,7 @@ use crate::global_params::*;
 
 pub struct UserInfo {
     pub username: String,
+    pub room_name: String,
     pub tcp_addr: SocketAddr,
     pub tcp_socket: TcpStream,
     pub tcp_io_mutex: Arc<Mutex<()>>,
@@ -34,6 +35,7 @@ impl UserInfo {
         }
         Ok(UserInfo {
             username: self.username.clone(),
+            room_name: String::from(DEFAULT_ROOM_NAME),
             tcp_addr: self.tcp_addr.clone(),
             tcp_socket: tcp_socket_clone.unwrap(),
             tcp_io_mutex: Arc::clone(&self.tcp_io_mutex),
@@ -208,6 +210,7 @@ impl NetService {
 
             let logger_copy = Arc::clone(&logger);
             let users_copy = Arc::clone(&users);
+            let config_copy = server_config.clone();
             let banned_addrs_copy = Arc::clone(&banned_addrs);
             let user_io_lock_copy = Arc::clone(&user_enters_leaves_server_lock);
             let server_password_copy = server_config.server_password.clone();
@@ -215,6 +218,7 @@ impl NetService {
                 NetService::handle_user(
                     socket,
                     addr,
+                    config_copy,
                     logger_copy,
                     users_copy,
                     banned_addrs_copy,
@@ -229,6 +233,7 @@ impl NetService {
     fn handle_user(
         socket: TcpStream,
         addr: SocketAddr,
+        server_config: ServerConfig,
         logger: Arc<Mutex<ServerLogger>>,
         users: Arc<Mutex<LinkedList<UserInfo>>>,
         banned_addrs: Arc<Mutex<Option<Vec<BannedAddress>>>>,
@@ -243,6 +248,7 @@ impl NetService {
 
         let mut user_info = UserInfo {
             username: String::from(""),
+            room_name: String::from(DEFAULT_ROOM_NAME),
             tcp_addr: addr,
             tcp_socket: socket,
             tcp_io_mutex: Arc::new(Mutex::new(())),
@@ -280,6 +286,7 @@ impl NetService {
             match user_net_service.handle_user_state(
                 _var_u16,
                 &mut user_info,
+                &server_config,
                 &users,
                 &banned_addrs,
                 &user_enters_leaves_server_lock,

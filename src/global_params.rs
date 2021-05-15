@@ -9,6 +9,7 @@ pub const MAX_USERNAME_SIZE: usize = 25;
 pub const MAX_PASSWORD_SIZE: usize = 20;
 pub const SPAM_PROTECTION_SEC: usize = 2; // client can send only 1 message per SPAM_PROTECTION_SEC
 pub const PASSWORD_RETRY_DELAY_SEC: usize = 5;
+pub const DEFAULT_ROOM_NAME: &str = "Lobby";
 
 pub const SERVER_DEFAULT_PORT: u16 = 51337;
 

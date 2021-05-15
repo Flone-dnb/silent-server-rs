@@ -33,6 +33,9 @@ fn main() {
             println!("config reset - resets the config to default settings");
             println!("config.port = *value* - change server's port");
             println!("config.password = *string* - change server's password");
+            println!("rooms clear - removes all rooms except for the 'Lobby' room");
+            println!("rooms add *room name* - adds a room");
+            println!("rooms remove *room name* - removes a room");
             println!("exit - exit the application");
         } else if input == "start" {
             net_service.start();
@@ -76,6 +79,31 @@ fn main() {
                 }
             } else {
                 println!("command '{}' not found", input);
+            }
+        } else if input == "rooms clear" {
+            net_service.server_config.clear_rooms();
+            net_service.server_config.save_config().unwrap();
+        } else if input.contains("rooms add ") {
+            let room_str: String = input
+                .chars()
+                .take(0)
+                .chain(input.chars().skip("rooms add ".chars().count()))
+                .collect();
+            if let Err(msg) = net_service.server_config.add_room(room_str) {
+                println!("{}", msg);
+            } else {
+                net_service.server_config.save_config().unwrap();
+            }
+        } else if input.contains("rooms remove ") {
+            let room_str: String = input
+                .chars()
+                .take(0)
+                .chain(input.chars().skip("rooms remove ".chars().count()))
+                .collect();
+            if let Err(msg) = net_service.server_config.remove_room(room_str) {
+                println!("{}", msg);
+            } else {
+                net_service.server_config.save_config().unwrap();
             }
         } else if input == "exit" {
             break;

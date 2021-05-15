@@ -14,6 +14,7 @@ use std::thread;
 use std::time::Duration;
 
 // Custom.
+use crate::config_io::ServerConfig;
 use crate::config_io::ServerLogger;
 use crate::global_params::*;
 use crate::services::net_service::*;
@@ -134,6 +135,7 @@ impl UserTcpService {
         &mut self,
         current_u16: u16,
         user_info: &mut UserInfo,
+        server_config: &ServerConfig,
         users: &Arc<Mutex<LinkedList<UserInfo>>>,
         banned_addrs: &Arc<Mutex<Option<Vec<BannedAddress>>>>,
         user_enters_leaves_server_lock: &Arc<Mutex<()>>,
@@ -145,6 +147,7 @@ impl UserTcpService {
                 return self.handle_not_connected_state(
                     current_u16,
                     user_info,
+                    server_config,
                     users,
                     banned_addrs,
                     user_enters_leaves_server_lock,
@@ -176,6 +179,7 @@ impl UserTcpService {
         &mut self,
         current_u16: u16,
         user_info: &mut UserInfo,
+        server_config: &ServerConfig,
         users: &Arc<Mutex<LinkedList<UserInfo>>>,
         banned_addrs: &Arc<Mutex<Option<Vec<BannedAddress>>>>,
         user_enters_leaves_server_lock: &Arc<Mutex<()>>,
@@ -480,8 +484,42 @@ impl UserTcpService {
                 }
             }
 
-            // Send usernames of other users.
             let mut info_out_buf: Vec<u8> = Vec::new();
+
+            // Send room count.
+            let room_count = server_config.rooms.len() as u16;
+            let room_count_buf = u16::encode::<u16>(&room_count);
+            if let Err(e) = room_count_buf {
+                return HandleStateResult::HandleStateErr(format!(
+                    "u64::encode::<u16> failed, error: socket ({}) on state (NotConnected) failed on 'room_count' (error: {}) at [{}, {}]",
+                    user_info.tcp_addr, e, file!(), line!()
+                ));
+            }
+            let mut room_count_buf = room_count_buf.unwrap();
+            info_out_buf.append(&mut room_count_buf);
+
+            // Send rooms.
+            for room in server_config.rooms.iter() {
+                // Room len.
+                let room_len = room.room_name.len() as u8;
+                let room_len_buf = u8::encode::<u8>(&room_len);
+                if let Err(e) = room_len_buf {
+                    return HandleStateResult::HandleStateErr(format!(
+                        "u16::encode::<u8> failed, error: socket ({}) on state (NotConnected) failed on 'room_len' (error: {}) at [{}, {}]",
+                        user_info.tcp_addr, e, file!(), line!()
+                    ));
+                }
+                let mut room_len_buf = room_len_buf.unwrap();
+
+                info_out_buf.append(&mut room_len_buf);
+
+                // Room.
+                let mut room_str = Vec::from(room.room_name.as_bytes());
+
+                info_out_buf.append(&mut room_str);
+            }
+
+            // Send usernames of other users.
             {
                 let users_guard = users.lock().unwrap();
 
@@ -497,6 +535,7 @@ impl UserTcpService {
                 info_out_buf.append(&mut users_count_buf);
 
                 for user in users_guard.iter() {
+                    // Username len.
                     let username_len = user.username.len() as u16;
                     let user_name_len_buf = u16::encode::<u16>(&username_len);
                     if let Err(e) = user_name_len_buf {
@@ -509,9 +548,28 @@ impl UserTcpService {
 
                     info_out_buf.append(&mut user_name_len_buf);
 
+                    // Username.
                     let mut user_name_buf = Vec::from(user.username.as_bytes());
 
                     info_out_buf.append(&mut user_name_buf);
+
+                    // Room len.
+                    let room_len = user.room_name.len() as u8;
+                    let room_len_buf = u8::encode::<u8>(&room_len);
+                    if let Err(e) = room_len_buf {
+                        return HandleStateResult::HandleStateErr(format!(
+                            "u16::encode::<u8> failed, error: socket ({}) on state (NotConnected) failed on 'room_len' (error: {}) at [{}, {}]",
+                            user_info.tcp_addr, e, file!(), line!()
+                        ));
+                    }
+                    let mut room_len_buf = room_len_buf.unwrap();
+
+                    info_out_buf.append(&mut room_len_buf);
+
+                    // Room.
+                    let mut user_room = Vec::from(user.room_name.as_bytes());
+
+                    info_out_buf.append(&mut user_room);
                 }
             }
 
