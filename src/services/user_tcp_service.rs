@@ -34,12 +34,13 @@ enum ConnectServerAnswer {
 }
 
 #[derive(FromPrimitive, ToPrimitive, PartialEq)]
-pub enum ServerMessage {
+pub enum ServerMessageTcp {
     UserConnected = 0,
     UserDisconnected = 1,
     UserMessage = 2,
     UserEntersRoom = 3,
     KeepAliveCheck = 4,
+    UserPing = 5,
 }
 
 #[derive(FromPrimitive, ToPrimitive, PartialEq)]
@@ -123,7 +124,7 @@ impl UserTcpService {
             Ok(n) => {
                 if n != buf.len() {
                     return IoResult::Err(format!(
-                        "socket ({}) try_write() failed, error: failed to read 'buf' size (got: {}, expected: {})",
+                        "socket ({}) try_write() failed, error: failed to write 'buf' size (got: {}, expected: {})",
                         user_info.tcp_addr, n, buf.len()
                     ));
                 }
@@ -507,7 +508,7 @@ impl UserTcpService {
             let room_count_buf = u16::encode::<u16>(&room_count);
             if let Err(e) = room_count_buf {
                 return HandleStateResult::HandleStateErr(format!(
-                    "u64::encode::<u16> failed, error: socket ({}) on state (NotConnected) failed on 'room_count' (error: {}) at [{}, {}]",
+                    "u64::encode::<u16> failed, error: socket ({}) on state (NotConnected) failed (error: {}) at [{}, {}]",
                     user_info.tcp_addr, e, file!(), line!()
                 ));
             }
@@ -521,7 +522,7 @@ impl UserTcpService {
                 let room_len_buf = u8::encode::<u8>(&room_len);
                 if let Err(e) = room_len_buf {
                     return HandleStateResult::HandleStateErr(format!(
-                        "u16::encode::<u8> failed, error: socket ({}) on state (NotConnected) failed on 'room_len' (error: {}) at [{}, {}]",
+                        "u16::encode::<u8> failed, error: socket ({}) on state (NotConnected) failed (error: {}) at [{}, {}]",
                         user_info.tcp_addr, e, file!(), line!()
                     ));
                 }
@@ -543,7 +544,7 @@ impl UserTcpService {
                 let users_count_buf = u64::encode::<u64>(&users_count);
                 if let Err(e) = users_count_buf {
                     return HandleStateResult::HandleStateErr(format!(
-                        "u64::encode::<u64> failed, error: socket ({}) on state (NotConnected) failed on 'users_count' (error: {}) at [{}, {}]",
+                        "u64::encode::<u64> failed, error: socket ({}) on state (NotConnected) failed (error: {}) at [{}, {}]",
                         user_info.tcp_addr, e, file!(), line!()
                     ));
                 }
@@ -556,7 +557,7 @@ impl UserTcpService {
                     let user_name_len_buf = u16::encode::<u16>(&username_len);
                     if let Err(e) = user_name_len_buf {
                         return HandleStateResult::HandleStateErr(format!(
-                            "u16::encode::<u16> failed, error: socket ({}) on state (NotConnected) failed on 'username_len' (error: {}) at [{}, {}]",
+                            "u16::encode::<u16> failed, error: socket ({}) on state (NotConnected) failed (error: {}) at [{}, {}]",
                             user_info.tcp_addr, e, file!(), line!()
                         ));
                     }
@@ -574,7 +575,7 @@ impl UserTcpService {
                     let room_len_buf = u8::encode::<u8>(&room_len);
                     if let Err(e) = room_len_buf {
                         return HandleStateResult::HandleStateErr(format!(
-                            "u16::encode::<u8> failed, error: socket ({}) on state (NotConnected) failed on 'room_len' (error: {}) at [{}, {}]",
+                            "u16::encode::<u8> failed, error: socket ({}) on state (NotConnected) failed (error: {}) at [{}, {}]",
                             user_info.tcp_addr, e, file!(), line!()
                         ));
                     }
@@ -586,6 +587,18 @@ impl UserTcpService {
                     let mut user_room = Vec::from(user.room_name.as_bytes());
 
                     info_out_buf.append(&mut user_room);
+
+                    // Last ping.
+                    let ping_buf = u16::encode::<u16>(&user.last_ping);
+                    if let Err(e) = ping_buf {
+                        return HandleStateResult::HandleStateErr(format!(
+                            "u16::encode::<u8> failed, error: socket ({}) on state (NotConnected) failed (error: {}) at [{}, {}]",
+                            user_info.tcp_addr, e, file!(), line!()
+                        ));
+                    }
+                    let mut ping_buf = ping_buf.unwrap();
+
+                    info_out_buf.append(&mut ping_buf);
                 }
             }
 
@@ -609,7 +622,7 @@ impl UserTcpService {
             // (size): username
             let mut newuser_info_out_buf: Vec<u8> = Vec::new();
 
-            let data_id = ServerMessage::UserConnected.to_u16();
+            let data_id = ServerMessageTcp::UserConnected.to_u16();
             if data_id.is_none() {
                 return HandleStateResult::HandleStateErr(format!(
                     "ToPrimitive::to_u16() failed, error: socket ({}) on state (NotConnected) at [{}, {}]",
@@ -694,7 +707,7 @@ impl UserTcpService {
         // (size) - message
 
         // use data ID = ServerMessage::UserMessage
-        let data_id = ServerMessage::UserMessage.to_u16();
+        let data_id = ServerMessageTcp::UserMessage.to_u16();
         if data_id.is_none() {
             return HandleStateResult::HandleStateErr(format!(
                 "ServerMessage::UserMessage.to_u16() failed at [{}, {}]",
@@ -859,7 +872,7 @@ impl UserTcpService {
         // (size) - room name
 
         // use data ID = ServerMessage::UserEntersRoom
-        let data_id = ServerMessage::UserEntersRoom.to_u16();
+        let data_id = ServerMessageTcp::UserEntersRoom.to_u16();
         if data_id.is_none() {
             return HandleStateResult::HandleStateErr(format!(
                 "ServerMessage::UserEntersRoom.to_u16() failed at [{}, {}]",
@@ -1043,7 +1056,7 @@ impl UserTcpService {
         let mut user_disconnected_info_out_buf: Vec<u8> = Vec::new();
 
         // Create data_id buffer.
-        let data_id = ServerMessage::UserDisconnected.to_u16();
+        let data_id = ServerMessageTcp::UserDisconnected.to_u16();
         if data_id.is_none() {
             return HandleStateResult::HandleStateErr(format!(
                 "ToPrimitive::to_u16() failed, error: socket ({}) at [{}, {}]",

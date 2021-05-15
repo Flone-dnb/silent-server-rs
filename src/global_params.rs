@@ -19,3 +19,6 @@ pub const INTERVAL_TCP_IDLE_MS: u64 = 250;
 pub const INTERVAL_TCP_MESSAGE_MS: u64 = 10;
 pub const INTERVAL_KEEP_ALIVE_CHECK_SEC: u64 = 60; // if user was inactive (no messages from user)
 pub const TIME_TO_ANSWER_TO_KEEP_ALIVE_SEC: u64 = 10; // after we send keep alive
+
+pub const INTERVAL_UDP_IDLE_MS: u64 = 5;
+pub const INTERVAL_UDP_MESSAGE_MS: u64 = 2;

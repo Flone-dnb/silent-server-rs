@@ -2,6 +2,7 @@
 use bytevec::{ByteDecodable, ByteEncodable};
 use chrono::prelude::*;
 use num_traits::cast::ToPrimitive;
+use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 
 // Std.
 use std::collections::LinkedList;
@@ -12,14 +13,17 @@ use std::time::Duration;
 
 // Custom.
 use super::user_tcp_service::*;
+use super::user_udp_service::*;
 use crate::config_io::*;
 use crate::global_params::*;
 
 pub struct UserInfo {
     pub username: String,
     pub room_name: String,
+    pub last_ping: u16,
     pub tcp_addr: SocketAddr,
     pub tcp_socket: TcpStream,
+    pub udp_socket: Option<UdpSocket>,
     pub tcp_io_mutex: Arc<Mutex<()>>,
     pub last_text_message_sent: DateTime<Local>,
     pub last_time_entered_room: DateTime<Local>,
@@ -38,8 +42,10 @@ impl UserInfo {
         Ok(UserInfo {
             username: self.username.clone(),
             room_name: String::from(DEFAULT_ROOM_NAME),
+            last_ping: 0,
             tcp_addr: self.tcp_addr.clone(),
             tcp_socket: tcp_socket_clone.unwrap(),
+            udp_socket: None,
             tcp_io_mutex: Arc::clone(&self.tcp_io_mutex),
             last_text_message_sent: Local::now(),
             last_time_entered_room: Local::now(),
@@ -252,8 +258,10 @@ impl NetService {
         let mut user_info = UserInfo {
             username: String::from(""),
             room_name: String::from(DEFAULT_ROOM_NAME),
+            last_ping: 0,
             tcp_addr: addr,
             tcp_socket: socket,
+            udp_socket: None,
             tcp_io_mutex: Arc::new(Mutex::new(())),
             last_text_message_sent: init_time,
             last_time_entered_room: init_time,
@@ -279,7 +287,7 @@ impl NetService {
                             }
                         } else {
                             // Send keep alive check.
-                            let data_id = ServerMessage::KeepAliveCheck.to_u16();
+                            let data_id = ServerMessageTcp::KeepAliveCheck.to_u16();
                             if data_id.is_none() {
                                 println!(
                                     "ToPrimitive::to_u16() failed, error: socket ({}) at [{}, {}]",
@@ -355,6 +363,8 @@ impl NetService {
             user_net_service.last_keep_alive_check_time = Local::now();
             user_net_service.sent_keep_alive = false;
 
+            let prev_state = user_net_service.user_state;
+
             // Using current state and these 2 bytes we know what to do.
             match user_net_service.handle_user_state(
                 _var_u16,
@@ -387,6 +397,18 @@ impl NetService {
                 }
                 HandleStateResult::Ok => {}
             };
+
+            if prev_state == UserState::NotConnected
+                && user_net_service.user_state == UserState::Connected
+            {
+                // Start UDP service.
+                let username_copy = user_info.username.clone();
+                let addr_copy = addr;
+                let users_copy = Arc::clone(&users);
+                thread::spawn(move || {
+                    NetService::udp_service(username_copy, addr_copy, users_copy)
+                });
+            }
         }
 
         let mut _out_str = String::from("");
@@ -444,5 +466,127 @@ impl NetService {
         if let Err(e) = logger_guard.println_and_log(&_out_str) {
             println!("{} at [{}, {}]", e, file!(), line!());
         }
+    }
+    fn udp_service(username: String, addr: SocketAddr, users: Arc<Mutex<LinkedList<UserInfo>>>) {
+        let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP));
+        if let Err(e) = socket {
+            println!(
+                "Socket::new() failed, error: {}, at [{}, {}]",
+                e,
+                file!(),
+                line!()
+            );
+            return;
+        }
+        let socket = socket.unwrap();
+        let sock_addr = SockAddr::from(SocketAddrV4::new(
+            Ipv4Addr::new(127, 0, 0, 1),
+            SERVER_DEFAULT_PORT,
+        ));
+        let res = socket.set_reuse_address(true);
+        if let Err(e) = res {
+            println!(
+                "Socket::set_reuse_address() failed, error: {}, at [{}, {}]",
+                e,
+                file!(),
+                line!()
+            );
+            return;
+        }
+        if let Err(e) = socket.bind(&sock_addr) {
+            println!(
+                "Socket::bind() failed, error: {}, at [{}, {}]",
+                e,
+                file!(),
+                line!()
+            );
+            return;
+        }
+
+        let udp_socket: UdpSocket = socket.into();
+
+        if let Err(e) = udp_socket.set_nonblocking(true) {
+            println!(
+                "udp_socket.set_nonblocking() failed, error: {}, at [{}, {}]",
+                e,
+                file!(),
+                line!()
+            );
+            return;
+        }
+
+        let user_udp_service = UserUdpService::new();
+
+        // Wait for "connection".
+        match user_udp_service.wait_for_connection(&udp_socket, addr, &username, &users) {
+            Ok(()) => {}
+            Err(msg) => {
+                println!("{} at [{}, {}]", msg, file!(), line!());
+                return;
+            }
+        }
+
+        // Prepare packet about user ping to all.
+        let mut ping_info_buf = Vec::new();
+        match user_udp_service.prepare_ping_info_buf(&username, &mut ping_info_buf) {
+            Ok(()) => {}
+            Err(msg) => {
+                println!("{} at [{}, {}]", msg, file!(), line!());
+                return;
+            }
+        }
+
+        let mut _this_user: &UserInfo;
+
+        // Start first ping check.
+        match user_udp_service.connect(&udp_socket) {
+            Ok(ping_ms) => {
+                // ping to buf
+                let ping_buf = u16::encode::<u16>(&ping_ms);
+                if let Err(e) = ping_buf {
+                    println!(
+                        "u16::encode::<u16>() failed, error: {} at [{}, {}]",
+                        e,
+                        file!(),
+                        line!()
+                    );
+                    return;
+                }
+                let mut ping_buf = ping_buf.unwrap();
+                ping_info_buf.append(&mut ping_buf);
+
+                let tcp_service = UserTcpService::new();
+
+                let mut users_guard = users.lock().unwrap();
+                for user in users_guard.iter_mut() {
+                    if user.username == username {
+                        user.last_ping = ping_ms;
+                        _this_user = user;
+                    } else {
+                        // send ping of this new user
+                        loop {
+                            match tcp_service.write_to_socket(user, &mut ping_info_buf) {
+                                IoResult::WouldBlock => {
+                                    thread::sleep(Duration::from_millis(INTERVAL_UDP_MESSAGE_MS));
+                                    continue;
+                                }
+                                IoResult::Err(msg) => {
+                                    println!("{} at [{}, {}]", msg, file!(), line!());
+                                    return;
+                                }
+                                _ => break,
+                            }
+                        }
+                    }
+                }
+            }
+            Err(msg) => {
+                println!("{} at [{}, {}]", msg, file!(), line!());
+                return;
+            }
+        }
+
+        // use 'recv' and 'send'
+        // Ready.
     }
 }
