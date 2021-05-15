@@ -38,11 +38,13 @@ enum ServerMessage {
     UserConnected = 0,
     UserDisconnected = 1,
     UserMessage = 2,
+    UserEntersRoom = 3,
 }
 
 #[derive(FromPrimitive, ToPrimitive, PartialEq)]
 pub enum ClientMessage {
     UserMessage = 0,
+    EnterRoom = 1,
 }
 
 pub enum IoResult {
@@ -170,6 +172,9 @@ impl UserTcpService {
                 match message_id {
                     ClientMessage::UserMessage => {
                         return self.handle_user_message(user_info, users);
+                    }
+                    ClientMessage::EnterRoom => {
+                        return self.handle_user_enters_room(user_info, users);
                     }
                 }
             }
@@ -815,6 +820,191 @@ impl UserTcpService {
         {
             let mut users_guard = users.lock().unwrap();
             for user in users_guard.iter_mut() {
+                if user.room_name == user_info.room_name {
+                    match self.write_to_socket(user, &mut out_buf) {
+                        IoResult::WouldBlock => {
+                            thread::sleep(Duration::from_millis(INTERVAL_TCP_MESSAGE_MS));
+                            continue;
+                        }
+                        IoResult::Ok(_) => {}
+                        res => return HandleStateResult::IoErr(res),
+                    }
+                }
+            }
+        }
+
+        HandleStateResult::Ok
+    }
+
+    fn handle_user_enters_room(
+        &self,
+        user_info: &mut UserInfo,
+        users: &Arc<Mutex<LinkedList<UserInfo>>>,
+    ) -> HandleStateResult {
+        // (u16) - data ID (enters room)
+        // (u16) - username.len()
+        // (size) - username
+        // (u8) - room name.len()
+        // (size) - room name
+
+        // use data ID = ServerMessage::UserEntersRoom
+        let data_id = ServerMessage::UserEntersRoom.to_u16();
+        if data_id.is_none() {
+            return HandleStateResult::HandleStateErr(format!(
+                "ServerMessage::UserEntersRoom.to_u16() failed at [{}, {}]",
+                file!(),
+                line!()
+            ));
+        }
+        let data_id = data_id.unwrap();
+        let data_id_buf = u16::encode::<u16>(&data_id);
+        if let Err(e) = data_id_buf {
+            return HandleStateResult::HandleStateErr(format!(
+                "u16::encode::<u16>() failed on value {} (error: {}) at [{}, {}]",
+                data_id,
+                e,
+                file!(),
+                line!()
+            ));
+        }
+        let mut data_id_buf = data_id_buf.unwrap();
+
+        // Read username len.
+        let mut username_len_buf: Vec<u8> = vec![0u8; std::mem::size_of::<u16>()];
+        loop {
+            match self.read_from_socket(user_info, &mut username_len_buf) {
+                IoResult::WouldBlock => {
+                    thread::sleep(Duration::from_millis(INTERVAL_TCP_MESSAGE_MS));
+                    continue;
+                }
+                IoResult::Ok(_) => {
+                    break;
+                }
+                res => return HandleStateResult::IoErr(res),
+            }
+        }
+        let username_len = u16::decode::<u16>(&username_len_buf);
+        if let Err(e) = username_len {
+            return HandleStateResult::HandleStateErr(format!(
+                "u16::decode::<u16>() failed, error: {} at [{}, {}]",
+                e,
+                file!(),
+                line!()
+            ));
+        }
+        let username_len = username_len.unwrap();
+        if username_len as usize > MAX_USERNAME_SIZE {
+            return HandleStateResult::HandleStateErr(format!(
+                "An error occurred, error: socket ({}) on state (Connected) failed because the received username len is too big ({}) while the maximum is {}, at [{}, {}]",
+                user_info.tcp_addr, username_len, MAX_USERNAME_SIZE, file!(), line!()
+            ));
+        }
+
+        // Read username.
+        let mut username_buf: Vec<u8> = vec![0u8; username_len as usize];
+        loop {
+            match self.read_from_socket(user_info, &mut username_buf) {
+                IoResult::WouldBlock => {
+                    thread::sleep(Duration::from_millis(INTERVAL_TCP_MESSAGE_MS));
+                    continue;
+                }
+                IoResult::Ok(_) => {
+                    break;
+                }
+                res => return HandleStateResult::IoErr(res),
+            }
+        }
+
+        // Read roomname len.
+        let mut room_name_len_buf: Vec<u8> = vec![0u8; std::mem::size_of::<u8>()];
+        loop {
+            match self.read_from_socket(user_info, &mut room_name_len_buf) {
+                IoResult::WouldBlock => {
+                    thread::sleep(Duration::from_millis(INTERVAL_TCP_MESSAGE_MS));
+                    continue;
+                }
+                IoResult::Ok(_) => {
+                    break;
+                }
+                res => return HandleStateResult::IoErr(res),
+            }
+        }
+        let room_name_len = u8::decode::<u8>(&room_name_len_buf);
+        if let Err(e) = room_name_len {
+            return HandleStateResult::HandleStateErr(format!(
+                "u16::decode::<u8>() failed, error: {} at [{}, {}]",
+                e,
+                file!(),
+                line!()
+            ));
+        }
+        let room_name_len = room_name_len.unwrap();
+        if room_name_len as usize > MAX_MESSAGE_SIZE {
+            return HandleStateResult::HandleStateErr(format!(
+                "An error occurred, error: socket ({}) on state (Connected) failed because the received room name len is too big ({}) while the maximum is {}, at [{}, {}]",
+                user_info.tcp_addr, room_name_len, MAX_MESSAGE_SIZE, file!(), line!()
+            ));
+        }
+
+        // Read room name.
+        let mut room_name_buf: Vec<u8> = vec![0u8; room_name_len as usize];
+        loop {
+            match self.read_from_socket(user_info, &mut room_name_buf) {
+                IoResult::WouldBlock => {
+                    thread::sleep(Duration::from_millis(INTERVAL_TCP_MESSAGE_MS));
+                    continue;
+                }
+                IoResult::Ok(_) => {
+                    break;
+                }
+                res => return HandleStateResult::IoErr(res),
+            }
+        }
+
+        // Check spam protection.
+        let time_diff = Local::now() - user_info.last_time_entered_room;
+        if time_diff.num_seconds() < SPAM_PROTECTION_SEC as i64 {
+            // can't happen with the default client version
+            return HandleStateResult::HandleStateErr(format!(
+                "the user '{}' tried moving from rooms too quick (which should not happen with the default client version) at [{}, {}]",
+                user_info.username, file!(), line!()
+            ));
+        }
+
+        user_info.last_time_entered_room = Local::now();
+
+        let room_name = String::from_utf8(room_name_buf.clone());
+        if let Err(e) = room_name {
+            return HandleStateResult::HandleStateErr(format!(
+                "String::from_utf8() failed, error: socket ({}) on state (Connected) failed, reason: ({}), at [{}, {}]",
+                user_info.tcp_addr, e, file!(), line!()
+            ));
+        }
+        let room_name = room_name.unwrap();
+        {
+            // change room for this user
+            let mut users_guard = users.lock().unwrap();
+            for user in users_guard.iter_mut() {
+                if user.username == user_info.username {
+                    user.room_name = room_name.clone();
+                    break;
+                }
+            }
+        }
+        user_info.room_name = room_name;
+
+        // Combine all to one buffer.
+        let mut out_buf: Vec<u8> = Vec::new();
+        out_buf.append(&mut data_id_buf);
+        out_buf.append(&mut username_len_buf);
+        out_buf.append(&mut username_buf);
+        out_buf.append(&mut room_name_len_buf);
+        out_buf.append(&mut room_name_buf);
+
+        // Send to all.
+        {
+            let mut users_guard = users.lock().unwrap();
+            for user in users_guard.iter_mut() {
                 match self.write_to_socket(user, &mut out_buf) {
                     IoResult::WouldBlock => {
                         thread::sleep(Duration::from_millis(INTERVAL_TCP_MESSAGE_MS));
@@ -828,6 +1018,7 @@ impl UserTcpService {
 
         HandleStateResult::Ok
     }
+
     pub fn send_disconnected_notice(
         &mut self,
         user_info: &mut UserInfo,

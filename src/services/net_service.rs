@@ -21,6 +21,7 @@ pub struct UserInfo {
     pub tcp_socket: TcpStream,
     pub tcp_io_mutex: Arc<Mutex<()>>,
     pub last_text_message_sent: DateTime<Local>,
+    pub last_time_entered_room: DateTime<Local>,
 }
 impl UserInfo {
     pub fn clone(&self) -> Result<UserInfo, String> {
@@ -40,6 +41,7 @@ impl UserInfo {
             tcp_socket: tcp_socket_clone.unwrap(),
             tcp_io_mutex: Arc::clone(&self.tcp_io_mutex),
             last_text_message_sent: Local::now(),
+            last_time_entered_room: Local::now(),
         })
     }
 }
@@ -253,6 +255,7 @@ impl NetService {
             tcp_socket: socket,
             tcp_io_mutex: Arc::new(Mutex::new(())),
             last_text_message_sent: init_time,
+            last_time_entered_room: init_time,
         };
 
         // Read data from the socket.
