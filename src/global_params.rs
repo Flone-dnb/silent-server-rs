@@ -12,9 +12,10 @@ pub const PASSWORD_RETRY_DELAY_SEC: usize = 5;
 pub const DEFAULT_ROOM_NAME: &str = "Lobby";
 
 pub const SERVER_DEFAULT_PORT: u16 = 51337;
-
 pub const SUPPORTED_CLIENT_VERSION: &str = "0.1.0";
 pub const MAX_VERSION_STRING_LENGTH: u32 = 30;
 
 pub const INTERVAL_TCP_IDLE_MS: u64 = 250;
 pub const INTERVAL_TCP_MESSAGE_MS: u64 = 10;
+pub const INTERVAL_KEEP_ALIVE_CHECK_SEC: u64 = 60; // if user was inactive (no messages from user)
+pub const TIME_TO_ANSWER_TO_KEEP_ALIVE_SEC: u64 = 10; // after we send keep alive

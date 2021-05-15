@@ -34,17 +34,19 @@ enum ConnectServerAnswer {
 }
 
 #[derive(FromPrimitive, ToPrimitive, PartialEq)]
-enum ServerMessage {
+pub enum ServerMessage {
     UserConnected = 0,
     UserDisconnected = 1,
     UserMessage = 2,
     UserEntersRoom = 3,
+    KeepAliveCheck = 4,
 }
 
 #[derive(FromPrimitive, ToPrimitive, PartialEq)]
 pub enum ClientMessage {
     UserMessage = 0,
     EnterRoom = 1,
+    KeepAliveCheck = 2,
 }
 
 pub enum IoResult {
@@ -63,12 +65,18 @@ pub enum HandleStateResult {
 
 pub struct UserTcpService {
     pub user_state: UserState,
+    pub last_keep_alive_check_time: DateTime<Local>,
+    pub sent_keep_alive: bool,
+    pub sent_keep_alive_time: DateTime<Local>,
 }
 
 impl UserTcpService {
     pub fn new() -> Self {
         UserTcpService {
             user_state: UserState::NotConnected,
+            last_keep_alive_check_time: Local::now(),
+            sent_keep_alive: false,
+            sent_keep_alive_time: Local::now(),
         }
     }
     pub fn read_from_socket(&self, user_info: &mut UserInfo, buf: &mut [u8]) -> IoResult {
@@ -175,6 +183,9 @@ impl UserTcpService {
                     }
                     ClientMessage::EnterRoom => {
                         return self.handle_user_enters_room(user_info, users);
+                    }
+                    ClientMessage::KeepAliveCheck => {
+                        return HandleStateResult::Ok;
                     }
                 }
             }
