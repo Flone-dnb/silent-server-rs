@@ -15,10 +15,14 @@ pub const SERVER_DEFAULT_PORT: u16 = 51337;
 pub const SUPPORTED_CLIENT_VERSION: &str = "0.1.0";
 pub const MAX_VERSION_STRING_LENGTH: u32 = 30;
 
+pub const IN_UDP_BUFFER_SIZE: usize = 1500;
+
 pub const INTERVAL_TCP_IDLE_MS: u64 = 250;
 pub const INTERVAL_TCP_MESSAGE_MS: u64 = 10;
 pub const INTERVAL_KEEP_ALIVE_CHECK_SEC: u64 = 60; // if user was inactive (no messages from user)
 pub const TIME_TO_ANSWER_TO_KEEP_ALIVE_SEC: u64 = 10; // after we send keep alive
+pub const INTERVAL_PING_CHECK_SEC: i64 = 60; // update ping every 'INTERVAL_PING_CHECK_SEC' seconds
 
+pub const INTERVAL_UDP_WAIT_FOR_CONNECTION_MS: u64 = 30;
 pub const INTERVAL_UDP_IDLE_MS: u64 = 5;
 pub const INTERVAL_UDP_MESSAGE_MS: u64 = 2;

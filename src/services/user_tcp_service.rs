@@ -40,7 +40,6 @@ pub enum ServerMessageTcp {
     UserMessage = 2,
     UserEntersRoom = 3,
     KeepAliveCheck = 4,
-    UserPing = 5,
 }
 
 #[derive(FromPrimitive, ToPrimitive, PartialEq)]

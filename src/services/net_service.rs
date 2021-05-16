@@ -1,11 +1,12 @@
 // External.
 use bytevec::{ByteDecodable, ByteEncodable};
 use chrono::prelude::*;
-use num_traits::cast::ToPrimitive;
+use num_traits::{cast::ToPrimitive, FromPrimitive};
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 
 // Std.
 use std::collections::LinkedList;
+use std::io::ErrorKind;
 use std::net::*;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -536,8 +537,6 @@ impl NetService {
             }
         }
 
-        let mut _this_user: &UserInfo;
-
         // Start first ping check.
         match user_udp_service.connect(&udp_socket) {
             Ok(ping_ms) => {
@@ -555,26 +554,20 @@ impl NetService {
                 let mut ping_buf = ping_buf.unwrap();
                 ping_info_buf.append(&mut ping_buf);
 
-                let tcp_service = UserTcpService::new();
-
+                // Send ping to all.
                 let mut users_guard = users.lock().unwrap();
                 for user in users_guard.iter_mut() {
                     if user.username == username {
                         user.last_ping = ping_ms;
-                        _this_user = user;
-                    } else {
-                        // send ping of this new user
-                        loop {
-                            match tcp_service.write_to_socket(user, &mut ping_info_buf) {
-                                IoResult::WouldBlock => {
-                                    thread::sleep(Duration::from_millis(INTERVAL_UDP_MESSAGE_MS));
-                                    continue;
-                                }
-                                IoResult::Err(msg) => {
-                                    println!("{} at [{}, {}]", msg, file!(), line!());
-                                    return;
-                                }
-                                _ => break,
+                    }
+                    if user.udp_socket.is_some() {
+                        match user_udp_service
+                            .send(user.udp_socket.as_ref().unwrap(), &ping_info_buf)
+                        {
+                            Ok(()) => {}
+                            Err(msg) => {
+                                println!("{} at [{}, {}]", msg, file!(), line!());
+                                return;
                             }
                         }
                     }
@@ -586,7 +579,97 @@ impl NetService {
             }
         }
 
-        // use 'recv' and 'send'
         // Ready.
+        let mut last_ping_check_time = Local::now();
+        let mut in_buf = vec![0u8; IN_UDP_BUFFER_SIZE];
+        loop {
+            match udp_socket.recv(&mut in_buf) {
+                Ok(_) => match FromPrimitive::from_u8(in_buf[0]) {
+                    Some(ClientMessageUdp::PingCheck) => {
+                        // Update user ping.
+                        let time_diff = Local::now() - last_ping_check_time;
+                        let user_ping_ms = time_diff.num_milliseconds() as u16;
+                        last_ping_check_time = Local::now();
+
+                        // Prepare packet about user ping to all.
+                        let mut ping_info_buf = Vec::new();
+                        match user_udp_service.prepare_ping_info_buf(&username, &mut ping_info_buf)
+                        {
+                            Ok(()) => {}
+                            Err(msg) => {
+                                println!("{} at [{}, {}]", msg, file!(), line!());
+                                return;
+                            }
+                        }
+
+                        // ping to buf
+                        let ping_buf = u16::encode::<u16>(&user_ping_ms);
+                        if let Err(e) = ping_buf {
+                            println!(
+                                "u16::encode::<u16>() failed, error: {} at [{}, {}]",
+                                e,
+                                file!(),
+                                line!()
+                            );
+                            return;
+                        }
+                        let mut ping_buf = ping_buf.unwrap();
+                        ping_info_buf.append(&mut ping_buf);
+
+                        let mut users_guard = users.lock().unwrap();
+                        for user in users_guard.iter_mut() {
+                            if user.username == username {
+                                user.last_ping = user_ping_ms;
+                            }
+                            if user.udp_socket.is_some() {
+                                match user_udp_service
+                                    .send(user.udp_socket.as_ref().unwrap(), &ping_info_buf)
+                                {
+                                    Ok(()) => {}
+                                    Err(msg) => {
+                                        println!("{} at [{}, {}]", msg, file!(), line!());
+                                        return;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Some(ClientMessageUdp::VoicePacket) => {}
+                    None => {
+                        println!(
+                            "FromPrimitive::from_u8() failed with value {}, at [{}, {}]",
+                            in_buf[0],
+                            file!(),
+                            line!()
+                        );
+                        return;
+                    }
+                },
+                Err(ref e) if e.kind() == ErrorKind::WouldBlock => {
+                    let time_diff = Local::now() - last_ping_check_time;
+                    if time_diff.num_seconds() > INTERVAL_PING_CHECK_SEC {
+                        match user_udp_service.send_ping_check(&udp_socket) {
+                            Ok(()) => last_ping_check_time = Local::now(),
+                            Err(msg) => {
+                                println!("{}, at [{}, {}]", msg, file!(), line!());
+                                return;
+                            }
+                        }
+                    }
+
+                    thread::sleep(Duration::from_millis(INTERVAL_UDP_IDLE_MS));
+                    continue;
+                }
+                Err(e) => {
+                    println!(
+                        "udp_socket.recv() failed, error: {}, at [{}, {}]",
+                        e,
+                        file!(),
+                        line!()
+                    );
+                    return;
+                }
+            }
+        }
     }
 }

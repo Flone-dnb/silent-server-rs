@@ -1,6 +1,8 @@
 // External.
 use bytevec::ByteEncodable;
 use chrono::prelude::*;
+use num_derive::FromPrimitive;
+use num_derive::ToPrimitive;
 use num_traits::cast::ToPrimitive;
 
 // Std.
@@ -13,8 +15,19 @@ use std::time::Duration;
 
 // Custom.
 use super::net_service::UserInfo;
-use super::user_tcp_service::ServerMessageTcp;
 use crate::global_params::*;
+
+#[derive(FromPrimitive, ToPrimitive, PartialEq)]
+pub enum ServerMessageUdp {
+    UserPing = 0,
+    PingCheck = 1,
+}
+
+#[derive(FromPrimitive, ToPrimitive, PartialEq)]
+pub enum ClientMessageUdp {
+    VoicePacket = 0,
+    PingCheck = 1,
+}
 
 #[derive(Debug)]
 pub struct UserUdpService {}
@@ -49,24 +62,24 @@ impl UserUdpService {
         let ping_time = Local::now() - ping_start_time;
         let ping_ms = ping_time.num_milliseconds() as u16;
 
-        // Write ping.
-        let ping_ms_buf = u16::encode::<u16>(&ping_ms);
-        if let Err(e) = ping_ms_buf {
+        Ok(ping_ms)
+    }
+    pub fn send_ping_check(&self, udp_socket: &UdpSocket) -> Result<(), String> {
+        let mut buf = vec![0u8; 1];
+        let data_id = ServerMessageUdp::PingCheck.to_u8();
+        if data_id.is_none() {
             return Err(format!(
-                "u16::encode::<u16>() failed, error: {}, at [{}, {}]",
-                e,
+                "ServerMessageUdp::PingCheck.to_u8() failed, at [{}, {}]",
                 file!(),
                 line!()
             ));
         }
-        let mut ping_ms_buf = ping_ms_buf.unwrap();
+        buf[0] = data_id.unwrap();
 
-        // Send ping.
-        if let Err(msg) = self.send(&udp_socket, &mut ping_ms_buf) {
-            return Err(format!("{}, at [{}, {}]", msg, file!(), line!()));
+        match self.send(udp_socket, &buf) {
+            Ok(()) => Ok(()),
+            Err(msg) => Err(format!("{}, at [{}, {}]", msg, file!(), line!())),
         }
-
-        Ok(ping_ms)
     }
     pub fn wait_for_connection(
         &self,
@@ -79,10 +92,67 @@ impl UserUdpService {
         loop {
             buf.fill(0u8);
             match self.peek(&udp_socket, &mut buf) {
-                Ok(src_addr) => {
+                Ok((size, src_addr)) => {
                     if user_addr.ip() != src_addr.ip() {
-                        // Not our data, don't touch.
-                        thread::sleep(Duration::from_millis(INTERVAL_UDP_IDLE_MS));
+                        // Not our data.
+                        // see if this data belongs to our users
+                        {
+                            let mut found = false;
+                            let users_guard = users.lock().unwrap();
+                            for user in users_guard.iter() {
+                                if user.tcp_addr.ip() == src_addr.ip() {
+                                    found = true;
+                                    break; // yes, belongs to our users
+                                }
+                            }
+
+                            // do under mutex
+                            if !found {
+                                // data does not belong to any of our users, remove this from queue
+                                let mut get_buf = vec![0u8; size];
+                                loop {
+                                    match udp_socket.recv_from(&mut get_buf) {
+                                        Err(ref e) if e.kind() == ErrorKind::WouldBlock => {
+                                            thread::sleep(Duration::from_millis(
+                                                INTERVAL_UDP_MESSAGE_MS,
+                                            ));
+                                            continue;
+                                        }
+                                        Err(e) => {
+                                            return Err(format!(
+                                                "udp_socket.recv_from() failed, error: {}, at [{}, {}]",
+                                                e,
+                                                file!(),
+                                                line!()
+                                            ));
+                                        }
+                                        Ok((n, recv_addr)) => {
+                                            if recv_addr != src_addr {
+                                                return Err(format!(
+                                                    "udp_socket.recv_from() failed, error: recv() on wrong addr (excepted: {}, got: {}), at [{}, {}]",
+                                                    src_addr,
+                                                    recv_addr,
+                                                    file!(),
+                                                    line!()
+                                                ));
+                                            }
+                                            if n != size {
+                                                return Err(format!(
+                                                    "udp_socket.recv_from() failed, error: recv() of wrong size (excepted: {}, got: {}), at [{}, {}]",
+                                                    size,
+                                                    n,
+                                                    file!(),
+                                                    line!()
+                                                ));
+                                            }
+                                            println!("info: received UDP packet not from our users with size: {} bytes, ignoring...", size);
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        thread::sleep(Duration::from_millis(INTERVAL_UDP_WAIT_FOR_CONNECTION_MS));
                         continue;
                     }
                     // ip correct, check username
@@ -104,7 +174,7 @@ impl UserUdpService {
 
                     if recv_username != user_name {
                         // Not our data, don't touch.
-                        thread::sleep(Duration::from_millis(INTERVAL_UDP_IDLE_MS));
+                        thread::sleep(Duration::from_millis(INTERVAL_UDP_WAIT_FOR_CONNECTION_MS));
                         continue;
                     }
 
@@ -180,11 +250,15 @@ impl UserUdpService {
 
         Ok(())
     }
-    pub fn peek(&self, udp_socket: &UdpSocket, buf: &mut [u8]) -> Result<SocketAddr, String> {
+    pub fn peek(
+        &self,
+        udp_socket: &UdpSocket,
+        buf: &mut [u8],
+    ) -> Result<(usize, SocketAddr), String> {
         loop {
             match udp_socket.peek_from(buf) {
-                Ok((_, addr)) => {
-                    return Ok(addr);
+                Ok((n, addr)) => {
+                    return Ok((n, addr));
                 }
                 Err(ref e) if e.kind() == ErrorKind::WouldBlock => {
                     thread::sleep(Duration::from_millis(INTERVAL_UDP_MESSAGE_MS));
@@ -203,26 +277,26 @@ impl UserUdpService {
     }
     pub fn prepare_ping_info_buf(&self, username: &str, buf: &mut Vec<u8>) -> Result<(), String> {
         // Data:
-        // (u16) - data ID (User ping)
-        // (u16) - username.len()
+        // (u8) - data ID (User ping)
+        // (u8) - username.len()
         // (size) - username
         // (u16) - ping (will be set outside of this function)
 
         // Prepare data ID.
         // use data ID = ServerMessage::UserMessage
-        let data_id = ServerMessageTcp::UserPing.to_u16();
+        let data_id = ServerMessageUdp::UserPing.to_u8();
         if data_id.is_none() {
             return Err(format!(
-                "ServerMessage::UserPing.to_u16() failed at [{}, {}]",
+                "ServerMessageUdp::UserPing.to_u8() failed at [{}, {}]",
                 file!(),
                 line!()
             ));
         }
         let data_id = data_id.unwrap();
-        let data_id_buf = u16::encode::<u16>(&data_id);
+        let data_id_buf = u8::encode::<u8>(&data_id);
         if let Err(e) = data_id_buf {
             return Err(format!(
-                "u16::encode::<u16>() failed on value {} (error: {}) at [{}, {}]",
+                "u16::encode::<u8>() failed on value {} (error: {}) at [{}, {}]",
                 data_id,
                 e,
                 file!(),
@@ -233,11 +307,11 @@ impl UserUdpService {
         buf.append(&mut data_id_buf);
 
         // Prepare username.len()
-        let username_len = username.len() as u16;
-        let username_len_buf = u16::encode::<u16>(&username_len);
+        let username_len = username.len() as u8;
+        let username_len_buf = u8::encode::<u8>(&username_len);
         if let Err(e) = username_len_buf {
             return Err(format!(
-                "u16::encode::<u16>() failed, error: {}, at [{}, {}]",
+                "u16::encode::<u8>() failed, error: {}, at [{}, {}]",
                 e,
                 file!(),
                 line!()
