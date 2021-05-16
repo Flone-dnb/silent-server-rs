@@ -8,7 +8,7 @@ use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 use std::collections::LinkedList;
 use std::io::ErrorKind;
 use std::net::*;
-use std::sync::{Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -268,6 +268,9 @@ impl NetService {
             last_time_entered_room: init_time,
         };
 
+        let (s, r) = mpsc::channel();
+        let r = Arc::new(Mutex::new(r));
+
         // Read data from the socket.
         loop {
             // Read 2 bytes.
@@ -406,10 +409,16 @@ impl NetService {
                 let username_copy = user_info.username.clone();
                 let addr_copy = addr;
                 let users_copy = Arc::clone(&users);
+                let r_clone = Arc::clone(&r);
                 thread::spawn(move || {
-                    NetService::udp_service(username_copy, addr_copy, users_copy)
+                    NetService::udp_service(username_copy, addr_copy, users_copy, r_clone)
                 });
             }
+        }
+
+        // signal to udp that we are done
+        if s.send(()).is_err() {
+            // udp thread probably ended earlier due to error
         }
 
         let mut _out_str = String::from("");
@@ -468,7 +477,12 @@ impl NetService {
             println!("{} at [{}, {}]", e, file!(), line!());
         }
     }
-    fn udp_service(username: String, addr: SocketAddr, users: Arc<Mutex<LinkedList<UserInfo>>>) {
+    fn udp_service(
+        username: String,
+        addr: SocketAddr,
+        users: Arc<Mutex<LinkedList<UserInfo>>>,
+        tcp_listen: Arc<Mutex<mpsc::Receiver<()>>>,
+    ) {
         let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP));
         if let Err(e) = socket {
             println!(
@@ -646,6 +660,13 @@ impl NetService {
                     }
                 },
                 Err(ref e) if e.kind() == ErrorKind::WouldBlock => {
+                    {
+                        if tcp_listen.lock().unwrap().try_recv().is_ok() {
+                            // tcp thread ended, finish this thread
+                            return;
+                        }
+                    }
+
                     let time_diff = Local::now() - last_ping_check_time;
                     if time_diff.num_seconds() > INTERVAL_PING_CHECK_SEC {
                         match user_udp_service.send_ping_check(&udp_socket) {

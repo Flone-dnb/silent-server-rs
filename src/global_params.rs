@@ -21,7 +21,7 @@ pub const INTERVAL_TCP_IDLE_MS: u64 = 250;
 pub const INTERVAL_TCP_MESSAGE_MS: u64 = 10;
 pub const INTERVAL_KEEP_ALIVE_CHECK_SEC: u64 = 60; // if user was inactive (no messages from user)
 pub const TIME_TO_ANSWER_TO_KEEP_ALIVE_SEC: u64 = 10; // after we send keep alive
-pub const INTERVAL_PING_CHECK_SEC: i64 = 60; // update ping every 'INTERVAL_PING_CHECK_SEC' seconds
+pub const INTERVAL_PING_CHECK_SEC: i64 = 30; // update ping every 'INTERVAL_PING_CHECK_SEC' seconds
 
 pub const INTERVAL_UDP_WAIT_FOR_CONNECTION_MS: u64 = 30;
 pub const INTERVAL_UDP_IDLE_MS: u64 = 5;
