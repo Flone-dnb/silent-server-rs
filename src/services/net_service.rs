@@ -648,7 +648,59 @@ impl NetService {
                             }
                         }
                     }
-                    Some(ClientMessageUdp::VoicePacket) => {}
+                    Some(ClientMessageUdp::VoicePacket) => {
+                        let mut read_index = 1usize;
+
+                        let voice_data_len_buf = &in_buf[1..1 + std::mem::size_of::<u16>()];
+                        read_index += std::mem::size_of::<u16>();
+                        let voice_data_len = u16::decode::<u16>(&voice_data_len_buf);
+                        if let Err(e) = voice_data_len {
+                            println!(
+                                "u16::decode::<u16>() failed, error: {} at [{}, {}]",
+                                e,
+                                file!(),
+                                line!()
+                            );
+                            return;
+                        }
+                        let voice_data_len = voice_data_len.unwrap();
+
+                        let voice_data = &in_buf[read_index..read_index + voice_data_len as usize];
+
+                        // Prepare out packet:
+                        // (u8) - id (ServerMessageUdp::VoiceMessage)
+                        // (u8) - username len
+                        // (size) - username
+                        // (u16) - voice data len
+                        // (size) - voice data
+                        let packet_id = ServerMessageUdp::VoiceMessage.to_u8().unwrap();
+                        let mut voice_data_len_buf = Vec::from(voice_data_len_buf);
+                        let mut voice_data = Vec::from(voice_data);
+                        let mut username_buf = Vec::from(username.as_bytes());
+                        let username_len = username_buf.len() as u8;
+
+                        let mut out_buf: Vec<u8> = Vec::new();
+                        out_buf.push(packet_id);
+                        out_buf.push(username_len);
+                        out_buf.append(&mut username_buf);
+                        out_buf.append(&mut voice_data_len_buf);
+                        out_buf.append(&mut voice_data);
+
+                        let mut users_guard = users.lock().unwrap();
+                        for user in users_guard.iter_mut() {
+                            if user.udp_socket.is_some() {
+                                match user_udp_service
+                                    .send(user.udp_socket.as_ref().unwrap(), &out_buf)
+                                {
+                                    Ok(()) => {}
+                                    Err(msg) => {
+                                        println!("{} at [{}, {}]", msg, file!(), line!());
+                                        return;
+                                    }
+                                }
+                            }
+                        }
+                    }
                     None => {
                         println!(
                             "FromPrimitive::from_u8() failed with value {}, at [{}, {}]",

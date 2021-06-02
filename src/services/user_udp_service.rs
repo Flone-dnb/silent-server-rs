@@ -21,6 +21,7 @@ use crate::global_params::*;
 pub enum ServerMessageUdp {
     UserPing = 0,
     PingCheck = 1,
+    VoiceMessage = 2,
 }
 
 #[derive(FromPrimitive, ToPrimitive, PartialEq)]
