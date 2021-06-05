@@ -688,7 +688,7 @@ impl NetService {
 
                         let mut users_guard = users.lock().unwrap();
                         for user in users_guard.iter_mut() {
-                            if user.udp_socket.is_some() {
+                            if user.username != username && user.udp_socket.is_some() {
                                 match user_udp_service
                                     .send(user.udp_socket.as_ref().unwrap(), &out_buf)
                                 {
