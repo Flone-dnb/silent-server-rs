@@ -125,7 +125,7 @@ impl NetService {
     ) {
         let init_time = Local::now();
 
-        let listener_socket = TcpListener::bind(format!("127.0.0.1:{}", server_config.server_port));
+        let listener_socket = TcpListener::bind(format!("0.0.0.0:{}", server_config.server_port));
 
         if let Err(e) = listener_socket {
             println!(
