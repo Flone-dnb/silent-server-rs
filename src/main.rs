@@ -25,6 +25,9 @@ fn main() {
             .expect("unable to read user input");
 
         input.pop(); // pop '\n'
+        if cfg!(windows) {
+            input.pop(); // pop '\r'
+        }
 
         if input == "help" {
             println!("available commands:");
