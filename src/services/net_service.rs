@@ -687,8 +687,21 @@ impl NetService {
                         out_buf.append(&mut voice_data);
 
                         let mut users_guard = users.lock().unwrap();
+                        let mut user_room = String::from(DEFAULT_ROOM_NAME);
+                        // get current user room
+                        for user in users_guard.iter() {
+                            if user.username == username {
+                                user_room = user.room_name.clone();
+                                break;
+                            }
+                        }
+
+                        // send voice message
                         for user in users_guard.iter_mut() {
-                            if user.username != username && user.udp_socket.is_some() {
+                            if user.username != username
+                                && user.udp_socket.is_some()
+                                && user.room_name == user_room
+                            {
                                 match user_udp_service
                                     .send(user.udp_socket.as_ref().unwrap(), &out_buf)
                                 {
