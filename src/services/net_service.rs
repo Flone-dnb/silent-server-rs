@@ -495,7 +495,7 @@ impl NetService {
         }
         let socket = socket.unwrap();
         let sock_addr = SockAddr::from(SocketAddrV4::new(
-            Ipv4Addr::new(127, 0, 0, 1),
+            Ipv4Addr::new(0, 0, 0, 0),
             SERVER_DEFAULT_PORT,
         ));
         let res = socket.set_reuse_address(true);
