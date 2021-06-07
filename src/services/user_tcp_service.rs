@@ -1,10 +1,16 @@
 // External.
+use aes::Aes128;
+use block_modes::block_padding::Pkcs7;
+use block_modes::{BlockMode, Ecb};
 use bytevec::{ByteDecodable, ByteEncodable};
 use chrono::prelude::*;
+use num::bigint::ToBigUint;
+use num::BigUint;
 use num_derive::FromPrimitive;
 use num_derive::ToPrimitive;
 use num_traits::cast::FromPrimitive;
 use num_traits::cast::ToPrimitive;
+use rand::Rng;
 
 // Std.
 use std::collections::LinkedList;
@@ -190,6 +196,257 @@ impl UserTcpService {
                 }
             }
         }
+    }
+    pub fn establish_secure_connection(&self, user_info: &mut UserInfo) -> Result<Vec<u8>, ()> {
+        let key_pg = [
+            (100005107, 13),
+            (100008323, 7),
+            (100000127, 13),
+            (100008023, 11),
+            (100008803, 11),
+        ];
+
+        let mut rng = rand::thread_rng();
+        let rnd_index = rng.gen_range(0..key_pg.len());
+
+        let p = key_pg[rnd_index].0;
+        let g = key_pg[rnd_index].1;
+
+        // Send 2 int values: p, g values.
+
+        let p_buf = u32::encode::<u32>(&p);
+        let g_buf = u32::encode::<u32>(&g);
+
+        if let Err(e) = p_buf {
+            println!("An error occurred while trying to establish a secure connection, error: {} at [{}, {}]", e, file!(), line!());
+            return Err(());
+        }
+        let mut p_buf = p_buf.unwrap();
+
+        if let Err(e) = g_buf {
+            println!("An error occurred while trying to establish a secure connection, error: {} at [{}, {}]", e, file!(), line!());
+            return Err(());
+        }
+        let mut g_buf = g_buf.unwrap();
+
+        p_buf.append(&mut g_buf);
+
+        // Send p and g values.
+        loop {
+            match self.write_to_socket(user_info, &mut p_buf) {
+                IoResult::FIN => {
+                    println!(
+                        "Received FIN while establishing a secure connection with {} at [{}, {}]",
+                        user_info.tcp_addr,
+                        file!(),
+                        line!()
+                    );
+                    return Err(());
+                }
+                IoResult::WouldBlock => {
+                    thread::sleep(Duration::from_millis(INTERVAL_TCP_MESSAGE_MS));
+                    continue;
+                }
+                IoResult::Err(msg) => {
+                    println!(
+                        "{} at [{}, {}] (socket: {})",
+                        msg,
+                        file!(),
+                        line!(),
+                        user_info.tcp_addr
+                    );
+                    return Err(());
+                }
+                IoResult::Ok(_) => {
+                    break;
+                }
+            }
+        }
+
+        // Generate secret key 'a'.
+
+        let a = rng.gen_range(1000000u64..10000000000000000000u64);
+
+        // Generate open key 'A'.
+
+        let g_big = g.to_biguint().unwrap();
+        let a_big = a.to_biguint().unwrap();
+        let p_big = p.to_biguint().unwrap();
+        let a_open = g_big.modpow(&a_big, &p_big);
+
+        // Prepare to send open key 'A'.
+
+        let mut a_open_buf = a_open.to_bytes_le();
+
+        // Send open key 'A' size.
+        let a_open_len = a_open_buf.len() as u64;
+        let a_open_len_buf = u64::encode::<u64>(&a_open_len);
+        if let Err(e) = a_open_len_buf {
+            println!("An error occurred while trying to establish a secure connection, error: {} at [{}, {}]", e, file!(), line!());
+            return Err(());
+        }
+        let mut a_open_len_buf = a_open_len_buf.unwrap();
+        loop {
+            match self.write_to_socket(user_info, &mut a_open_len_buf) {
+                IoResult::FIN => {
+                    println!(
+                        "Received FIN while establishing a secure connection with {} at [{}, {}]",
+                        user_info.tcp_addr,
+                        file!(),
+                        line!()
+                    );
+                    return Err(());
+                }
+                IoResult::WouldBlock => {
+                    thread::sleep(Duration::from_millis(INTERVAL_TCP_MESSAGE_MS));
+                    continue;
+                }
+                IoResult::Err(msg) => {
+                    println!(
+                        "{} at [{}, {}] (socket: {})",
+                        msg,
+                        file!(),
+                        line!(),
+                        user_info.tcp_addr
+                    );
+                    return Err(());
+                }
+                IoResult::Ok(_) => {
+                    break;
+                }
+            }
+        }
+
+        // Send open key 'A'.
+        loop {
+            match self.write_to_socket(user_info, &mut a_open_buf) {
+                IoResult::FIN => {
+                    println!(
+                        "Received FIN while establishing a secure connection with {} at [{}, {}]",
+                        user_info.tcp_addr,
+                        file!(),
+                        line!()
+                    );
+                    return Err(());
+                }
+                IoResult::WouldBlock => {
+                    thread::sleep(Duration::from_millis(INTERVAL_TCP_MESSAGE_MS));
+                    continue;
+                }
+                IoResult::Err(msg) => {
+                    println!(
+                        "{} at [{}, {}] (socket: {})",
+                        msg,
+                        file!(),
+                        line!(),
+                        user_info.tcp_addr
+                    );
+                    return Err(());
+                }
+                IoResult::Ok(_) => {
+                    break;
+                }
+            }
+        }
+
+        // Receive open key 'B' size.
+
+        let mut b_open_len_buf = vec![0u8; std::mem::size_of::<u64>()];
+        loop {
+            match self.read_from_socket(user_info, &mut b_open_len_buf) {
+                IoResult::FIN => {
+                    println!(
+                        "Received FIN while establishing a secure connection with {} at [{}, {}]",
+                        user_info.tcp_addr,
+                        file!(),
+                        line!()
+                    );
+                    return Err(());
+                }
+                IoResult::WouldBlock => {
+                    thread::sleep(Duration::from_millis(INTERVAL_TCP_MESSAGE_MS));
+                    continue;
+                }
+                IoResult::Err(msg) => {
+                    println!(
+                        "{} at [{}, {}] (socket: {})",
+                        msg,
+                        file!(),
+                        line!(),
+                        user_info.tcp_addr
+                    );
+                    return Err(());
+                }
+                IoResult::Ok(_) => {
+                    break;
+                }
+            }
+        }
+
+        // Receive open key 'B'.
+        let b_open_len = u64::decode::<u64>(&b_open_len_buf);
+        if let Err(e) = b_open_len {
+            println!(
+                "u64::decode::<u64>() failed, error: {}, at [{}, {}]",
+                e,
+                file!(),
+                line!()
+            );
+            return Err(());
+        }
+        let b_open_len = b_open_len.unwrap();
+        let mut b_open_buf = vec![0u8; b_open_len as usize];
+
+        loop {
+            match self.read_from_socket(user_info, &mut b_open_buf) {
+                IoResult::FIN => {
+                    println!(
+                        "Received FIN while establishing a secure connection with {} at [{}, {}]",
+                        user_info.tcp_addr,
+                        file!(),
+                        line!()
+                    );
+                    return Err(());
+                }
+                IoResult::WouldBlock => {
+                    thread::sleep(Duration::from_millis(INTERVAL_TCP_MESSAGE_MS));
+                    continue;
+                }
+                IoResult::Err(msg) => {
+                    println!(
+                        "{} at [{}, {}] (socket: {})",
+                        msg,
+                        file!(),
+                        line!(),
+                        user_info.tcp_addr
+                    );
+                    return Err(());
+                }
+                IoResult::Ok(_) => {
+                    break;
+                }
+            }
+        }
+
+        let b_open_big = BigUint::from_bytes_le(&b_open_buf);
+
+        // Calculate the secret key.
+
+        let secret_key = b_open_big.modpow(&a_big, &p_big);
+
+        let mut secret_key_str = secret_key.to_str_radix(10);
+
+        if secret_key_str.len() < 16 {
+            loop {
+                secret_key_str += &secret_key_str.clone();
+
+                if secret_key_str.len() >= 16 {
+                    break;
+                }
+            }
+        }
+
+        Ok(Vec::from(&secret_key_str[0..16]))
     }
     fn handle_not_connected_state(
         &mut self,
@@ -702,8 +959,8 @@ impl UserTcpService {
         // (u16) - data ID (user message)
         // (u16) - username.len()
         // (size) - username
-        // (u16) - message.len()
-        // (size) - message
+        // (u16) - message (encrypted).len()
+        // (size) - message (encrypted)
 
         // use data ID = ServerMessage::UserMessage
         let data_id = ServerMessageTcp::UserMessage.to_u16();
@@ -773,10 +1030,10 @@ impl UserTcpService {
             }
         }
 
-        // Read message len.
-        let mut message_len_buf: Vec<u8> = vec![0u8; std::mem::size_of::<u16>()];
+        // Read encrypted message len.
+        let mut encrypted_message_len_buf: Vec<u8> = vec![0u8; std::mem::size_of::<u16>()];
         loop {
-            match self.read_from_socket(user_info, &mut message_len_buf) {
+            match self.read_from_socket(user_info, &mut encrypted_message_len_buf) {
                 IoResult::WouldBlock => {
                     thread::sleep(Duration::from_millis(INTERVAL_TCP_MESSAGE_MS));
                     continue;
@@ -787,8 +1044,8 @@ impl UserTcpService {
                 res => return HandleStateResult::IoErr(res),
             }
         }
-        let message_len = u16::decode::<u16>(&message_len_buf);
-        if let Err(e) = message_len {
+        let encrypted_message_len = u16::decode::<u16>(&encrypted_message_len_buf);
+        if let Err(e) = encrypted_message_len {
             return HandleStateResult::HandleStateErr(format!(
                 "u16::decode::<u16>() failed, error: {} at [{}, {}]",
                 e,
@@ -796,18 +1053,18 @@ impl UserTcpService {
                 line!()
             ));
         }
-        let message_len = message_len.unwrap();
-        if message_len as usize > MAX_MESSAGE_SIZE {
+        let encrypted_message_len = encrypted_message_len.unwrap();
+        if encrypted_message_len as usize > MAX_MESSAGE_SIZE + 64 {
             return HandleStateResult::HandleStateErr(format!(
-                "An error occurred, error: socket ({}) on state (Connected) failed because the received message len is too big ({}) while the maximum is {}, at [{}, {}]",
-                user_info.tcp_addr, message_len, MAX_MESSAGE_SIZE, file!(), line!()
+                "An error occurred, error: socket ({}) on state (Connected) failed because the received encrypted message len is too big ({}) while the maximum is {}, at [{}, {}]",
+                user_info.tcp_addr, encrypted_message_len, MAX_MESSAGE_SIZE, file!(), line!()
             ));
         }
 
         // Read message.
-        let mut message_buf: Vec<u8> = vec![0u8; message_len as usize];
+        let mut encrypted_message_buf: Vec<u8> = vec![0u8; encrypted_message_len as usize];
         loop {
-            match self.read_from_socket(user_info, &mut message_buf) {
+            match self.read_from_socket(user_info, &mut encrypted_message_buf) {
                 IoResult::WouldBlock => {
                     thread::sleep(Duration::from_millis(INTERVAL_TCP_MESSAGE_MS));
                     continue;
@@ -831,20 +1088,55 @@ impl UserTcpService {
 
         user_info.last_text_message_sent = Local::now();
 
+        // Decrypt user message.
+        type Aes128Ecb = Ecb<Aes128, Pkcs7>;
+        let cipher = Aes128Ecb::new_from_slices(&user_info.secret_key, Default::default()).unwrap();
+        let encrypted_message = cipher.decrypt_vec(&encrypted_message_buf);
+        if let Err(e) = encrypted_message {
+            return HandleStateResult::HandleStateErr(format!(
+                "cipher.decrypt_vec() failed, error: {} at [{}, {}]",
+                e,
+                file!(),
+                line!()
+            ));
+        }
+        let user_message = encrypted_message.unwrap();
+
         // Combine all to one buffer.
         let mut out_buf: Vec<u8> = Vec::new();
         out_buf.append(&mut data_id_buf);
         out_buf.append(&mut username_len_buf);
         out_buf.append(&mut username_buf);
-        out_buf.append(&mut message_len_buf);
-        out_buf.append(&mut message_buf);
 
         // Send to all.
         {
             let mut users_guard = users.lock().unwrap();
             for user in users_guard.iter_mut() {
                 if user.room_name == user_info.room_name {
-                    match self.write_to_socket(user, &mut out_buf) {
+                    let mut copy_buf = out_buf.clone();
+
+                    // Encrypt with user key.
+                    let cipher =
+                        Aes128Ecb::new_from_slices(&user.secret_key, Default::default()).unwrap();
+                    let mut encrypted_message = cipher.encrypt_vec(&user_message);
+
+                    // Prepare message len buffer.
+                    let encrypted_message_len = encrypted_message.len() as u16;
+                    let encrypted_message_len_buf = u16::encode::<u16>(&encrypted_message_len);
+                    if let Err(e) = encrypted_message_len_buf {
+                        return HandleStateResult::HandleStateErr(format!(
+                            "u16::encode::<u16>() failed, error: {} at [{}, {}]",
+                            e,
+                            file!(),
+                            line!()
+                        ));
+                    }
+                    let mut encrypted_message_len_buf = encrypted_message_len_buf.unwrap();
+
+                    copy_buf.append(&mut encrypted_message_len_buf);
+                    copy_buf.append(&mut encrypted_message);
+
+                    match self.write_to_socket(user, &mut copy_buf) {
                         IoResult::WouldBlock => {
                             thread::sleep(Duration::from_millis(INTERVAL_TCP_MESSAGE_MS));
                             continue;

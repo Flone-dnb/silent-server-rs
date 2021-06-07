@@ -1,4 +1,7 @@
 // External.
+use aes::Aes128;
+use block_modes::block_padding::Pkcs7;
+use block_modes::{BlockMode, Ecb};
 use bytevec::{ByteDecodable, ByteEncodable};
 use chrono::prelude::*;
 use num_traits::{cast::ToPrimitive, FromPrimitive};
@@ -28,6 +31,7 @@ pub struct UserInfo {
     pub tcp_io_mutex: Arc<Mutex<()>>,
     pub last_text_message_sent: DateTime<Local>,
     pub last_time_entered_room: DateTime<Local>,
+    pub secret_key: Vec<u8>,
 }
 impl UserInfo {
     pub fn clone(&self) -> Result<UserInfo, String> {
@@ -50,6 +54,7 @@ impl UserInfo {
             tcp_io_mutex: Arc::clone(&self.tcp_io_mutex),
             last_text_message_sent: Local::now(),
             last_time_entered_room: Local::now(),
+            secret_key: self.secret_key.clone(),
         })
     }
 }
@@ -169,6 +174,7 @@ impl NetService {
 
             let (socket, addr) = accept_result.unwrap();
 
+            // Check if this IP is banned.
             {
                 let mut banned_addrs_guard = banned_addrs.lock().unwrap();
 
@@ -254,7 +260,7 @@ impl NetService {
         let mut buf_u16 = [0u8; 2];
         let mut _var_u16 = 0u16;
         let mut is_error = true;
-        let mut user_net_service = UserTcpService::new();
+        let mut user_tcp_service = UserTcpService::new();
 
         let mut user_info = UserInfo {
             username: String::from(""),
@@ -266,25 +272,36 @@ impl NetService {
             tcp_io_mutex: Arc::new(Mutex::new(())),
             last_text_message_sent: init_time,
             last_time_entered_room: init_time,
+            secret_key: Vec::new(),
         };
 
-        let (s, r) = mpsc::channel();
-        let r = Arc::new(Mutex::new(r));
+        match user_tcp_service.establish_secure_connection(&mut user_info) {
+            Ok(key) => {
+                user_info.secret_key = key;
+            }
+            Err(_) => {
+                // failed
+                return;
+            }
+        }
+
+        let (udp_sender, udp_receiver) = mpsc::channel();
+        let udp_receiver = Arc::new(Mutex::new(udp_receiver));
 
         // Read data from the socket.
         loop {
             // Read 2 bytes.
-            match user_net_service.read_from_socket(&mut user_info, &mut buf_u16) {
+            match user_tcp_service.read_from_socket(&mut user_info, &mut buf_u16) {
                 IoResult::FIN => {
                     is_error = false;
                     break;
                 }
                 IoResult::WouldBlock => {
-                    let time_diff = Local::now() - user_net_service.last_keep_alive_check_time;
+                    let time_diff = Local::now() - user_tcp_service.last_keep_alive_check_time;
                     if time_diff.num_seconds() > INTERVAL_KEEP_ALIVE_CHECK_SEC as i64 {
-                        if user_net_service.sent_keep_alive {
+                        if user_tcp_service.sent_keep_alive {
                             // Already did that.
-                            let time_diff = Local::now() - user_net_service.sent_keep_alive_time;
+                            let time_diff = Local::now() - user_tcp_service.sent_keep_alive_time;
                             if time_diff.num_seconds() > TIME_TO_ANSWER_TO_KEEP_ALIVE_SEC as i64 {
                                 // no answer was received
                                 break; // close connection
@@ -314,7 +331,7 @@ impl NetService {
 
                             let mut _is_fin = false;
                             loop {
-                                match user_net_service
+                                match user_tcp_service
                                     .write_to_socket(&mut user_info, &mut data_id_buf)
                                 {
                                     IoResult::FIN => {
@@ -341,8 +358,8 @@ impl NetService {
                                 break;
                             }
 
-                            user_net_service.sent_keep_alive = true;
-                            user_net_service.sent_keep_alive_time = Local::now();
+                            user_tcp_service.sent_keep_alive = true;
+                            user_tcp_service.sent_keep_alive_time = Local::now();
                         }
                     }
 
@@ -364,13 +381,13 @@ impl NetService {
                 }
             }
 
-            user_net_service.last_keep_alive_check_time = Local::now();
-            user_net_service.sent_keep_alive = false;
+            user_tcp_service.last_keep_alive_check_time = Local::now();
+            user_tcp_service.sent_keep_alive = false;
 
-            let prev_state = user_net_service.user_state;
+            let prev_state = user_tcp_service.user_state;
 
             // Using current state and these 2 bytes we know what to do.
-            match user_net_service.handle_user_state(
+            match user_tcp_service.handle_user_state(
                 _var_u16,
                 &mut user_info,
                 &server_config,
@@ -403,27 +420,34 @@ impl NetService {
             };
 
             if prev_state == UserState::NotConnected
-                && user_net_service.user_state == UserState::Connected
+                && user_tcp_service.user_state == UserState::Connected
             {
                 // Start UDP service.
                 let username_copy = user_info.username.clone();
                 let addr_copy = addr;
                 let users_copy = Arc::clone(&users);
-                let r_clone = Arc::clone(&r);
+                let r_clone = Arc::clone(&udp_receiver);
+                let secret_key_clone = user_info.secret_key.clone();
                 thread::spawn(move || {
-                    NetService::udp_service(username_copy, addr_copy, users_copy, r_clone)
+                    NetService::udp_service(
+                        username_copy,
+                        addr_copy,
+                        users_copy,
+                        r_clone,
+                        secret_key_clone,
+                    )
                 });
             }
         }
 
         // signal to udp that we are done
-        if s.send(()).is_err() {
+        if udp_sender.send(()).is_err() {
             // udp thread probably ended earlier due to error
         }
 
         let mut _out_str = String::from("");
 
-        if user_net_service.user_state == UserState::Connected {
+        if user_tcp_service.user_state == UserState::Connected {
             let mut _users_connected = 0;
             {
                 let _guard = user_enters_leaves_server_lock.lock().unwrap();
@@ -451,7 +475,7 @@ impl NetService {
                 );
             }
 
-            match user_net_service.send_disconnected_notice(&mut user_info, users) {
+            match user_tcp_service.send_disconnected_notice(&mut user_info, users) {
                 HandleStateResult::HandleStateErr(msg) => {
                     println!("{} at [{}, {}]", msg, file!(), line!());
                 }
@@ -482,6 +506,7 @@ impl NetService {
         addr: SocketAddr,
         users: Arc<Mutex<LinkedList<UserInfo>>>,
         tcp_listen: Arc<Mutex<mpsc::Receiver<()>>>,
+        secret_key: Vec<u8>,
     ) {
         let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP));
         if let Err(e) = socket {
@@ -651,10 +676,13 @@ impl NetService {
                     Some(ClientMessageUdp::VoicePacket) => {
                         let mut read_index = 1usize;
 
-                        let voice_data_len_buf = &in_buf[1..1 + std::mem::size_of::<u16>()];
+                        // read voice data (encrypted) len
+                        let encrypted_voice_data_len_buf =
+                            &in_buf[1..1 + std::mem::size_of::<u16>()];
                         read_index += std::mem::size_of::<u16>();
-                        let voice_data_len = u16::decode::<u16>(&voice_data_len_buf);
-                        if let Err(e) = voice_data_len {
+                        let encrypted_voice_data_len =
+                            u16::decode::<u16>(&encrypted_voice_data_len_buf);
+                        if let Err(e) = encrypted_voice_data_len {
                             println!(
                                 "u16::decode::<u16>() failed, error: {} at [{}, {}]",
                                 e,
@@ -663,19 +691,35 @@ impl NetService {
                             );
                             return;
                         }
-                        let voice_data_len = voice_data_len.unwrap();
+                        let encrypted_voice_data_len = encrypted_voice_data_len.unwrap();
 
-                        let voice_data = &in_buf[read_index..read_index + voice_data_len as usize];
+                        // Read voice data (encrypted)
+                        let encrypted_voice_data =
+                            &in_buf[read_index..read_index + encrypted_voice_data_len as usize];
+
+                        // Decrypt user voice data.
+                        type Aes128Ecb = Ecb<Aes128, Pkcs7>;
+                        let cipher =
+                            Aes128Ecb::new_from_slices(&secret_key, Default::default()).unwrap();
+                        let decrypted_message = cipher.decrypt_vec(encrypted_voice_data);
+                        if let Err(e) = decrypted_message {
+                            println!(
+                                "cipher.decrypt_vec() failed, error: {} at [{}, {}]",
+                                e,
+                                file!(),
+                                line!()
+                            );
+                            return;
+                        }
+                        let user_voice_message = decrypted_message.unwrap();
 
                         // Prepare out packet:
                         // (u8) - id (ServerMessageUdp::VoiceMessage)
                         // (u8) - username len
                         // (size) - username
-                        // (u16) - voice data len
-                        // (size) - voice data
+                        // (u16) - voice data len (encrypted)
+                        // (size) - voice data (encrypted)
                         let packet_id = ServerMessageUdp::VoiceMessage.to_u8().unwrap();
-                        let mut voice_data_len_buf = Vec::from(voice_data_len_buf);
-                        let mut voice_data = Vec::from(voice_data);
                         let mut username_buf = Vec::from(username.as_bytes());
                         let username_len = username_buf.len() as u8;
 
@@ -683,8 +727,6 @@ impl NetService {
                         out_buf.push(packet_id);
                         out_buf.push(username_len);
                         out_buf.append(&mut username_buf);
-                        out_buf.append(&mut voice_data_len_buf);
-                        out_buf.append(&mut voice_data);
 
                         let mut users_guard = users.lock().unwrap();
                         let mut user_room = String::from(DEFAULT_ROOM_NAME);
@@ -702,8 +744,38 @@ impl NetService {
                                 && user.udp_socket.is_some()
                                 && user.room_name == user_room
                             {
+                                let mut copy_buf = out_buf.clone();
+
+                                // Encrypt with user key.
+                                let cipher = Aes128Ecb::new_from_slices(
+                                    &user.secret_key,
+                                    Default::default(),
+                                )
+                                .unwrap();
+                                let mut encrypted_voice_message =
+                                    cipher.encrypt_vec(&user_voice_message);
+
+                                // Prepare message len buffer.
+                                let encrypted_message_len = encrypted_voice_message.len() as u16;
+                                let encrypted_message_len_buf =
+                                    u16::encode::<u16>(&encrypted_message_len);
+                                if let Err(e) = encrypted_message_len_buf {
+                                    println!(
+                                        "u16::encode::<u16>() failed, error: {} at [{}, {}]",
+                                        e,
+                                        file!(),
+                                        line!()
+                                    );
+                                    return;
+                                }
+                                let mut encrypted_message_len_buf =
+                                    encrypted_message_len_buf.unwrap();
+
+                                copy_buf.append(&mut encrypted_message_len_buf);
+                                copy_buf.append(&mut encrypted_voice_message);
+
                                 match user_udp_service
-                                    .send(user.udp_socket.as_ref().unwrap(), &out_buf)
+                                    .send(user.udp_socket.as_ref().unwrap(), &copy_buf)
                                 {
                                     Ok(()) => {}
                                     Err(msg) => {
