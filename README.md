@@ -6,3 +6,6 @@ If you are under NAT, you need to forward the UDP and TCP port 51337 (can be cha
 Use 'help' command to see available commands.
 # Build
 Use 'cargo build --release' (requires Rust nightly) to build the app.
+# License
+Please note, that starting from version **1.1.1** this project is licensed under the MIT license.<br>
+All versions prior to version **1.1.1** were licensed under the ZLib license.
