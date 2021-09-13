@@ -1,6 +1,6 @@
 [package]
 name = "silent_server"
-version = "1.1.0"
+version = "1.1.1"
 authors = ["Aleksandr \"Flone\" Tretyakov (github.com/Flone-dnb)"]
 edition = "2018"
 license = "Zlib"
