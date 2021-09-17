@@ -1,10 +1,11 @@
 // External.
 use bytevec::{ByteDecodable, ByteEncodable};
 use chrono::prelude::*;
+#[cfg(target_os = "windows")]
 use platform_dirs::UserDirs;
 
 // Std.
-use std::fs::File;
+use std::fs::*;
 use std::io::prelude::*;
 use std::path::Path;
 
@@ -515,23 +516,56 @@ impl ServerConfig {
     }
 
     fn get_config_file_dir() -> Result<String, String> {
-        let user_dirs = UserDirs::new();
-        if user_dirs.is_none() {
-            return Err(format!(
-                "UserDirs::new() failed, error: can't read user dirs at [{}, {}]",
-                file!(),
-                line!(),
-            ));
+        let mut _config_dir = String::new();
+        #[cfg(target_os = "windows")]{
+            let user_dirs = UserDirs::new();
+            if user_dirs.is_none() {
+                return Err(format!(
+                    "UserDirs::new() failed, error: can't read user dirs at [{}, {}]",
+                    file!(),
+                    line!(),
+                ));
+            }
+            let user_dirs = user_dirs.unwrap();
+            _config_dir = String::from(user_dirs.document_dir.to_str().unwrap());
         }
-        let user_dirs = user_dirs.unwrap();
-
-        let config_dir = String::from(user_dirs.document_dir.to_str().unwrap());
-
-        let mut _config_file_path = config_dir;
-        if !_config_file_path.ends_with("/") && !_config_file_path.ends_with("\\") {
-            _config_file_path += "/";
+        
+        #[cfg(target_os = "linux")]{
+            _config_dir = format!("/home/{}/.config", users::get_current_username().unwrap().to_str().unwrap());
+            if !Path::new(&_config_dir).exists(){
+                if let Err(e) = create_dir(&_config_dir){
+                    panic!("unable to create a .config directory ({}): {}", &_config_dir, e);
+                }
+            }
         }
 
-        Ok(_config_file_path)
+        #[cfg(target_os = "windows")]
+        if !_config_dir.ends_with("\\"){
+            _config_dir += "\\";
+        }
+
+        #[cfg(target_os = "linux")]
+        if !_config_dir.ends_with("/") {
+            _config_dir += "/";
+        }
+
+        _config_dir += CONFIG_DIR_NAME;
+        if !Path::new(&_config_dir).exists(){
+            if let Err(e) = create_dir(&_config_dir){
+                panic!("unable to create a config directory ({}), error: {}", &_config_dir, e);
+            }
+        }
+
+        #[cfg(target_os = "windows")]
+        if !_config_dir.ends_with("\\"){
+            _config_dir += "\\";
+        }
+
+        #[cfg(target_os = "linux")]
+        if !_config_dir.ends_with("/") {
+            _config_dir += "/";
+        }
+
+        Ok(_config_dir)
     }
 }

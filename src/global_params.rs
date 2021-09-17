@@ -1,5 +1,6 @@
 pub const CONFIG_FILE_NAME: &str = "silent_server.config";
 pub const LOG_FILE_NAME: &str = "silent_server.log";
+pub const CONFIG_DIR_NAME: &str = "SilentServer";
 pub const CONFIG_FILE_MAGIC_NUMBER: u16 = 51338;
 pub const CONFIG_FILE_VERSION: u64 = 0;
 
