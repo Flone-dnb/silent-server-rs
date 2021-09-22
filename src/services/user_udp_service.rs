@@ -48,7 +48,7 @@ impl UserUdpService {
         }
 
         // Receive '0' as OK.
-        if let Err(msg) = self.recv(&udp_socket, &mut ok_buf) {
+        if let Err(msg) = self.recv(udp_socket, &mut ok_buf) {
             return Err(format!("{}, at [{}, {}]", msg, file!(), line!()));
         }
 
@@ -92,7 +92,7 @@ impl UserUdpService {
         let mut buf = vec![0u8; 2 + MAX_USERNAME_SIZE * 4];
         loop {
             buf.fill(0u8);
-            match self.peek(&udp_socket, &mut buf) {
+            match self.peek(udp_socket, &mut buf) {
                 Ok((size, src_addr)) => {
                     if user_addr.ip() != src_addr.ip() {
                         // Not our data.

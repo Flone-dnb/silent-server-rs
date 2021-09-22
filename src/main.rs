@@ -56,14 +56,14 @@ fn main() {
                     .collect();
 
                 let port_u16 = port_str.parse::<u16>();
-                if port_u16.is_err() {
+                if let Ok(value) = port_u16 {
+                    net_service.server_config.server_port = value;
+                    net_service.server_config.save_config().unwrap();
+                } else {
                     println!(
                         "can't parse value (maximum value for port is {})",
                         std::u16::MAX
                     );
-                } else {
-                    net_service.server_config.server_port = port_u16.unwrap();
-                    net_service.server_config.save_config().unwrap();
                 }
             } else if input.contains("config.password = ") {
                 let password_str: String = input
@@ -114,6 +114,6 @@ fn main() {
             println!("command '{}' not found", input);
         }
 
-        println!("");
+        println!();
     }
 }

@@ -57,7 +57,7 @@ pub enum ClientMessage {
 pub enum IoResult {
     Ok(usize),
     WouldBlock,
-    FIN,
+    Fin,
     Err(String),
 }
 
@@ -85,7 +85,7 @@ impl UserTcpService {
         }
     }
     pub fn read_from_socket(&self, user_info: &mut UserInfo, buf: &mut [u8]) -> IoResult {
-        if buf.len() == 0 {
+        if buf.is_empty() {
             return IoResult::Err(format!(
                 "An error occurred at UserTcpService::read_from_socket_tcp(), error: passed 'buf' has 0 len at [{}, {}]", file!(), line!()
             ));
@@ -95,7 +95,7 @@ impl UserTcpService {
         // (non-blocking)
         match user_info.tcp_socket.read(buf) {
             Ok(0) => {
-                return IoResult::FIN;
+                return IoResult::Fin
             }
             Ok(n) => {
                 if n != buf.len() {
@@ -123,7 +123,7 @@ impl UserTcpService {
         // (non-blocking)
         match user_info.tcp_socket.write(buf) {
             Ok(0) => {
-                return IoResult::FIN;
+                return IoResult::Fin;
             }
             Ok(n) => {
                 if n != buf.len() {
@@ -139,10 +139,10 @@ impl UserTcpService {
                 return IoResult::WouldBlock;
             }
             Err(e) => {
-                return IoResult::Err(String::from(format!(
+                return IoResult::Err(format!(
                     "socket ({}) try_write() failed, error: {}",
                     user_info.tcp_addr, e
-                )));
+                ));
             }
         };
     }
@@ -159,7 +159,7 @@ impl UserTcpService {
     ) -> HandleStateResult {
         match self.user_state {
             UserState::NotConnected => {
-                return self.handle_not_connected_state(
+                self.handle_not_connected_state(
                     current_u16,
                     user_info,
                     server_config,
@@ -168,7 +168,7 @@ impl UserTcpService {
                     user_enters_leaves_server_lock,
                     logger,
                     server_password,
-                );
+                )
             }
             UserState::Connected => {
                 let message_id = ClientMessage::from_u16(current_u16);
@@ -184,13 +184,13 @@ impl UserTcpService {
 
                 match message_id {
                     ClientMessage::UserMessage => {
-                        return self.handle_user_message(user_info, users);
+                        self.handle_user_message(user_info, users)
                     }
                     ClientMessage::EnterRoom => {
-                        return self.handle_user_enters_room(user_info, users);
+                        self.handle_user_enters_room(user_info, users)
                     }
                     ClientMessage::KeepAliveCheck => {
-                        return HandleStateResult::Ok;
+                        HandleStateResult::Ok
                     }
                 }
             }
@@ -233,7 +233,7 @@ impl UserTcpService {
         // Send p and g values.
         loop {
             match self.write_to_socket(user_info, &mut p_buf) {
-                IoResult::FIN => {
+                IoResult::Fin => {
                     println!(
                         "Received FIN while establishing a secure connection with {} at [{}, {}]",
                         user_info.tcp_addr,
@@ -287,7 +287,7 @@ impl UserTcpService {
         let mut a_open_len_buf = a_open_len_buf.unwrap();
         loop {
             match self.write_to_socket(user_info, &mut a_open_len_buf) {
-                IoResult::FIN => {
+                IoResult::Fin => {
                     println!(
                         "Received FIN while establishing a secure connection with {} at [{}, {}]",
                         user_info.tcp_addr,
@@ -319,7 +319,7 @@ impl UserTcpService {
         // Send open key 'A'.
         loop {
             match self.write_to_socket(user_info, &mut a_open_buf) {
-                IoResult::FIN => {
+                IoResult::Fin => {
                     println!(
                         "Received FIN while establishing a secure connection with {} at [{}, {}]",
                         user_info.tcp_addr,
@@ -353,7 +353,7 @@ impl UserTcpService {
         let mut b_open_len_buf = vec![0u8; std::mem::size_of::<u64>()];
         loop {
             match self.read_from_socket(user_info, &mut b_open_len_buf) {
-                IoResult::FIN => {
+                IoResult::Fin => {
                     println!(
                         "Received FIN while establishing a secure connection with {} at [{}, {}]",
                         user_info.tcp_addr,
@@ -398,7 +398,7 @@ impl UserTcpService {
 
         loop {
             match self.read_from_socket(user_info, &mut b_open_buf) {
-                IoResult::FIN => {
+                IoResult::Fin => {
                     println!(
                         "Received FIN while establishing a secure connection with {} at [{}, {}]",
                         user_info.tcp_addr,
@@ -657,7 +657,7 @@ impl UserTcpService {
                 }
             }
 
-            if name_is_unique == false {
+            if !name_is_unique {
                 // Send error (username taken).
                 answer = ConnectServerAnswer::UsernameTaken;
             }

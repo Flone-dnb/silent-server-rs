@@ -48,7 +48,7 @@ impl UserInfo {
             username: self.username.clone(),
             room_name: String::from(DEFAULT_ROOM_NAME),
             last_ping: 0,
-            tcp_addr: self.tcp_addr.clone(),
+            tcp_addr: self.tcp_addr,
             tcp_socket: tcp_socket_clone.unwrap(),
             udp_socket: None,
             tcp_io_mutex: Arc::clone(&self.tcp_io_mutex),
@@ -292,7 +292,7 @@ impl NetService {
         loop {
             // Read 2 bytes.
             match user_tcp_service.read_from_socket(&mut user_info, &mut buf_u16) {
-                IoResult::FIN => {
+                IoResult::Fin => {
                     is_error = false;
                     break;
                 }
@@ -334,7 +334,7 @@ impl NetService {
                                 match user_tcp_service
                                     .write_to_socket(&mut user_info, &mut data_id_buf)
                                 {
-                                    IoResult::FIN => {
+                                    IoResult::Fin => {
                                         is_error = false;
                                         _is_fin = true;
                                         break;
@@ -398,7 +398,7 @@ impl NetService {
                 &server_password,
             ) {
                 HandleStateResult::IoErr(read_e) => match read_e {
-                    IoResult::FIN => {
+                    IoResult::Fin => {
                         is_error = false;
                         break;
                     }
@@ -475,11 +475,8 @@ impl NetService {
                 );
             }
 
-            match user_tcp_service.send_disconnected_notice(&mut user_info, users) {
-                HandleStateResult::HandleStateErr(msg) => {
-                    println!("{} at [{}, {}]", msg, file!(), line!());
-                }
-                _ => {}
+            if let HandleStateResult::HandleStateErr(msg) = user_tcp_service.send_disconnected_notice(&mut user_info, users){
+                println!("{} at [{}, {}]", msg, file!(), line!());
             }
         } else {
             if is_error {
@@ -681,7 +678,7 @@ impl NetService {
                             &in_buf[1..1 + std::mem::size_of::<u16>()];
                         read_index += std::mem::size_of::<u16>();
                         let encrypted_voice_data_len =
-                            u16::decode::<u16>(&encrypted_voice_data_len_buf);
+                            u16::decode::<u16>(encrypted_voice_data_len_buf);
                         if let Err(e) = encrypted_voice_data_len {
                             println!(
                                 "u16::decode::<u16>() failed, error: {} at [{}, {}]",

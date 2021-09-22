@@ -20,7 +20,7 @@ impl ServerLogger {
     pub fn new() -> Self {
         ServerLogger { file_handle: None }
     }
-    pub fn open(&mut self, log_file_path: &String) -> Result<(), String> {
+    pub fn open(&mut self, log_file_path: &str) -> Result<(), String> {
         if Path::new(log_file_path).exists() {
             // Remove existing (old) config file.
             if let Err(e) = std::fs::remove_file(log_file_path) {
@@ -450,7 +450,7 @@ impl ServerConfig {
         }
 
         // Write server password.
-        if self.server_password.len() > 0 {
+        if !self.server_password.is_empty() {
             if let Err(e) = config_file.write(self.server_password.as_bytes()) {
                 return Err(format!("File::write() failed, error: can't write to new config file (error: {}) at [{}, {}]",
                 e,
@@ -510,8 +510,8 @@ impl ServerConfig {
     fn get_config_file_path() -> Result<String, String> {
         let res = ServerConfig::get_config_file_dir();
         match res {
-            Ok(path) => return Ok(path + CONFIG_FILE_NAME),
-            Err(msg) => return Err(format!("{} at [{}, {}]", msg, file!(), line!())),
+            Ok(path) => Ok(path + CONFIG_FILE_NAME),
+            Err(msg) => Err(format!("{} at [{}, {}]", msg, file!(), line!())),
         }
     }
 
@@ -540,12 +540,12 @@ impl ServerConfig {
         }
 
         #[cfg(target_os = "windows")]
-        if !_config_dir.ends_with("\\"){
+        if !_config_dir.ends_with('\\'){
             _config_dir += "\\";
         }
 
         #[cfg(target_os = "linux")]
-        if !_config_dir.ends_with("/") {
+        if !_config_dir.ends_with('/') {
             _config_dir += "/";
         }
 
@@ -557,12 +557,12 @@ impl ServerConfig {
         }
 
         #[cfg(target_os = "windows")]
-        if !_config_dir.ends_with("\\"){
+        if !_config_dir.ends_with('\\'){
             _config_dir += "\\";
         }
 
         #[cfg(target_os = "linux")]
-        if !_config_dir.ends_with("/") {
+        if !_config_dir.ends_with('/') {
             _config_dir += "/";
         }
 
