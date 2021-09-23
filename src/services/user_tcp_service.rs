@@ -4,7 +4,7 @@ use block_modes::block_padding::Pkcs7;
 use block_modes::{BlockMode, Ecb};
 use bytevec::{ByteDecodable, ByteEncodable};
 use chrono::prelude::*;
-use num_bigint::{ToBigUint, BigUint};
+use num_bigint::{BigUint, ToBigUint};
 use num_derive::FromPrimitive;
 use num_derive::ToPrimitive;
 use num_traits::cast::FromPrimitive;
@@ -94,9 +94,7 @@ impl UserTcpService {
         let _io_guard = user_info.tcp_io_mutex.lock().unwrap();
         // (non-blocking)
         match user_info.tcp_socket.read(buf) {
-            Ok(0) => {
-                return IoResult::Fin
-            }
+            Ok(0) => return IoResult::Fin,
             Ok(n) => {
                 if n != buf.len() {
                     return IoResult::Err(format!(
@@ -158,18 +156,16 @@ impl UserTcpService {
         server_password: &str,
     ) -> HandleStateResult {
         match self.user_state {
-            UserState::NotConnected => {
-                self.handle_not_connected_state(
-                    current_u16,
-                    user_info,
-                    server_config,
-                    users,
-                    banned_addrs,
-                    user_enters_leaves_server_lock,
-                    logger,
-                    server_password,
-                )
-            }
+            UserState::NotConnected => self.handle_not_connected_state(
+                current_u16,
+                user_info,
+                server_config,
+                users,
+                banned_addrs,
+                user_enters_leaves_server_lock,
+                logger,
+                server_password,
+            ),
             UserState::Connected => {
                 let message_id = ClientMessage::from_u16(current_u16);
                 if message_id.is_none() {
@@ -183,15 +179,9 @@ impl UserTcpService {
                 let message_id = message_id.unwrap();
 
                 match message_id {
-                    ClientMessage::UserMessage => {
-                        self.handle_user_message(user_info, users)
-                    }
-                    ClientMessage::EnterRoom => {
-                        self.handle_user_enters_room(user_info, users)
-                    }
-                    ClientMessage::KeepAliveCheck => {
-                        HandleStateResult::Ok
-                    }
+                    ClientMessage::UserMessage => self.handle_user_message(user_info, users),
+                    ClientMessage::EnterRoom => self.handle_user_enters_room(user_info, users),
+                    ClientMessage::KeepAliveCheck => HandleStateResult::Ok,
                 }
             }
         }
@@ -549,17 +539,17 @@ impl UserTcpService {
             };
         }
 
-        // Get password string size.
-        let mut password_size_buf = vec![0u8; std::mem::size_of::<u16>()];
-        let mut _password_size = 0u16;
+        // Get encrypted password string size.
+        let mut encrypted_password_size_buf = vec![0u8; std::mem::size_of::<u16>()];
+        let mut _encrypted_password_size = 0u16;
         loop {
-            match self.read_from_socket(user_info, &mut password_size_buf) {
+            match self.read_from_socket(user_info, &mut encrypted_password_size_buf) {
                 IoResult::WouldBlock => {
                     thread::sleep(Duration::from_millis(INTERVAL_TCP_MESSAGE_MS));
                     continue;
                 }
                 IoResult::Ok(_bytes) => {
-                    let res = u16::decode::<u16>(&password_size_buf);
+                    let res = u16::decode::<u16>(&encrypted_password_size_buf);
                     if let Err(e) = res {
                         return HandleStateResult::HandleStateErr(format!(
                             "u16::decode::<u16>() failed, error: socket ({}) failed to decode (error: {}) at [{}, {}]",
@@ -567,7 +557,7 @@ impl UserTcpService {
                         ));
                     }
 
-                    _password_size = res.unwrap();
+                    _encrypted_password_size = res.unwrap();
 
                     break;
                 }
@@ -576,32 +566,46 @@ impl UserTcpService {
         }
 
         let mut _password = String::new();
-        if _password_size != 0 {
-            if _password_size as usize > MAX_PASSWORD_SIZE {
+        if _encrypted_password_size != 0 {
+            if _encrypted_password_size as usize > MAX_PASSWORD_SIZE {
                 return HandleStateResult::HandleStateErr(format!(
                     "An error occurred, error: socket ({}) on state (NotConnected) failed because the received password len is too big ({}) while the maximum is {}, at [{}, {}]",
-                    user_info.tcp_addr, _password_size, MAX_PASSWORD_SIZE, file!(), line!()
+                    user_info.tcp_addr, _encrypted_password_size, MAX_PASSWORD_SIZE, file!(), line!()
                 ));
             }
 
-            // Get password string.
-            let mut password_buf = vec![0u8; _password_size as usize];
+            // Get encrypted password string.
+            let mut encrypted_password_buf = vec![0u8; _encrypted_password_size as usize];
             loop {
-                match self.read_from_socket(user_info, &mut password_buf) {
+                match self.read_from_socket(user_info, &mut encrypted_password_buf) {
                     IoResult::WouldBlock => {
                         thread::sleep(Duration::from_millis(INTERVAL_TCP_MESSAGE_MS));
                         continue;
                     }
                     IoResult::Ok(_bytes) => {
-                        let res = std::str::from_utf8(&password_buf);
-                        if let Err(e) = res {
+                        // Decrypt password.
+                        type Aes128Ecb = Ecb<Aes128, Pkcs7>;
+                        let cipher =
+                            Aes128Ecb::new_from_slices(&user_info.secret_key, Default::default())
+                                .unwrap();
+                        let decrypted_password = cipher.decrypt_vec(&encrypted_password_buf);
+                        if let Err(e) = decrypted_password {
+                            return HandleStateResult::HandleStateErr(format!(
+                                "cipher.decrypt_vec() failed, error: {} at [{}, {}]",
+                                e,
+                                file!(),
+                                line!()
+                            ));
+                        }
+                        let decrypted_password = decrypted_password.unwrap();
+                        let password = std::str::from_utf8(&decrypted_password);
+                        if let Err(e) = password {
                             return HandleStateResult::HandleStateErr(format!(
                                 "std::str::from_utf8() failed, error: socket ({}) on state (NotConnected) failed (error: {}) at [{}, {}]",
                                 user_info.tcp_addr, e, file!(), line!()
                             ));
                         }
-
-                        _password = String::from(res.unwrap());
+                        _password = String::from(password.unwrap());
 
                         break;
                     }
@@ -1090,8 +1094,8 @@ impl UserTcpService {
         // Decrypt user message.
         type Aes128Ecb = Ecb<Aes128, Pkcs7>;
         let cipher = Aes128Ecb::new_from_slices(&user_info.secret_key, Default::default()).unwrap();
-        let encrypted_message = cipher.decrypt_vec(&encrypted_message_buf);
-        if let Err(e) = encrypted_message {
+        let decrypted_message = cipher.decrypt_vec(&encrypted_message_buf);
+        if let Err(e) = decrypted_message {
             return HandleStateResult::HandleStateErr(format!(
                 "cipher.decrypt_vec() failed, error: {} at [{}, {}]",
                 e,
@@ -1099,7 +1103,7 @@ impl UserTcpService {
                 line!()
             ));
         }
-        let user_message = encrypted_message.unwrap();
+        let user_message = decrypted_message.unwrap();
 
         // Combine all to one buffer.
         let mut out_buf: Vec<u8> = Vec::new();
