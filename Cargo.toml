@@ -1,9 +1,13 @@
 [package]
 name = "silent_server"
 version = "1.1.1"
-authors = ["Aleksandr \"Flone\" Tretyakov (github.com/Flone-dnb)"]
+authors = ["Aleksandr \"Flone\" Tretyakov"]
 edition = "2018"
-license = "Zlib"
+license = "MIT"
+description = "Lightweight open-source voice chat server written in Rust."
+repository = "https://github.com/Flone-dnb/silent-rs"
+homepage = "https://github.com/Flone-dnb/silent-rs"
+readme = "README.md"
 
 [dependencies]
 bytevec = "0.2.0"
