@@ -644,7 +644,8 @@ impl UserTcpService {
             }
 
             // Check if the client version is supported.
-            if _client_version_string != SUPPORTED_CLIENT_VERSION {
+            if &_client_version_string[..SUPPORTED_CLIENT_VERSION.len()] != SUPPORTED_CLIENT_VERSION
+            {
                 // Send error (wrong version).
                 answer = ConnectServerAnswer::WrongVersion;
             }
