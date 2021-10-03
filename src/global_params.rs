@@ -13,8 +13,7 @@ pub const PASSWORD_RETRY_DELAY_SEC: usize = 5;
 pub const DEFAULT_ROOM_NAME: &str = "Lobby";
 
 pub const SERVER_DEFAULT_PORT: u16 = 51337;
-pub const SUPPORTED_CLIENT_VERSION: &str = "2.0";
-pub const MAX_VERSION_STRING_LENGTH: u32 = 30;
+pub const NETWORK_PROTOCOL_VERSION: u64 = 0; // client with the same version is considered compatible
 
 pub const IN_UDP_BUFFER_SIZE: usize = 1500;
 

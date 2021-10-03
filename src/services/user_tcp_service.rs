@@ -33,7 +33,7 @@ pub enum UserState {
 #[derive(FromPrimitive, ToPrimitive, PartialEq)]
 enum ConnectServerAnswer {
     Ok = 0,
-    WrongVersion = 1,
+    WrongProtocol = 1,
     UsernameTaken = 2,
     WrongPassword = 3,
 }
@@ -52,6 +52,7 @@ pub enum ClientMessage {
     UserMessage = 0,
     EnterRoom = 1,
     KeepAliveCheck = 2,
+    TryConnect = 3,
 }
 
 pub enum IoResult {
@@ -182,6 +183,7 @@ impl UserTcpService {
                     ClientMessage::UserMessage => self.handle_user_message(user_info, users),
                     ClientMessage::EnterRoom => self.handle_user_enters_room(user_info, users),
                     ClientMessage::KeepAliveCheck => HandleStateResult::Ok,
+                    ClientMessage::TryConnect => HandleStateResult::Ok, // will be handled above
                 }
             }
         }
@@ -448,32 +450,43 @@ impl UserTcpService {
         logger: &Arc<Mutex<ServerLogger>>,
         server_password: &str,
     ) -> HandleStateResult {
-        if current_u16 as u32 > MAX_VERSION_STRING_LENGTH {
+        let message_id = ClientMessage::from_u16(current_u16);
+        if message_id.is_none() {
             return HandleStateResult::HandleStateErr(format!(
-                "An error occurred, error: socket ({}) on state (NotConnected) failed, reason: version str len ({}) > {} at [{}, {}]",
-                user_info.tcp_addr, current_u16, MAX_VERSION_STRING_LENGTH, file!(), line!()
+                "ClientMessage::from() failed on value {} at [{}, {}]",
+                current_u16,
+                file!(),
+                line!()
+            ));
+        }
+        let message_id = message_id.unwrap();
+
+        if message_id != ClientMessage::TryConnect {
+            return HandleStateResult::HandleStateErr(format!(
+                "ClientMessage::from() failed on value {} - incorrect client message on not connected state.",
+                current_u16,
             ));
         }
 
-        // Get version string.
-        let mut client_version_buf = vec![0u8; current_u16 as usize];
-        let mut _client_version_string = String::new();
+        // Get protocol version.
+        let mut protocol_version_buf = vec![0u8; std::mem::size_of::<u64>()];
+        let mut _protocol_version: u64 = 0;
         loop {
-            match self.read_from_socket(user_info, &mut client_version_buf) {
+            match self.read_from_socket(user_info, &mut protocol_version_buf) {
                 IoResult::WouldBlock => {
                     thread::sleep(Duration::from_millis(INTERVAL_TCP_MESSAGE_MS));
                     continue;
                 }
                 IoResult::Ok(_bytes) => {
-                    let res = std::str::from_utf8(&client_version_buf);
+                    let res = u64::decode::<u64>(&protocol_version_buf);
                     if let Err(e) = res {
                         return HandleStateResult::HandleStateErr(format!(
-                            "std::str::from_utf8() failed, error: socket ({}) on state (NotConnected) failed (error: {}) at [{}, {}]",
+                            "u64::decode::<u64>() failed, error: socket ({}) on state (NotConnected) failed (error: {}) at [{}, {}]",
                             user_info.tcp_addr, e, file!(), line!()
                         ));
                     }
 
-                    _client_version_string = String::from(res.unwrap());
+                    _protocol_version = res.unwrap();
 
                     break;
                 }
@@ -643,11 +656,10 @@ impl UserTcpService {
                 }
             }
 
-            // Check if the client version is supported.
-            if &_client_version_string[..SUPPORTED_CLIENT_VERSION.len()] != SUPPORTED_CLIENT_VERSION
-            {
-                // Send error (wrong version).
-                answer = ConnectServerAnswer::WrongVersion;
+            // Check if the client protocol is supported.
+            if _protocol_version != NETWORK_PROTOCOL_VERSION {
+                // Send error (wrong protocol).
+                answer = ConnectServerAnswer::WrongProtocol;
             }
 
             // Check if the name is unique.
@@ -699,14 +711,14 @@ impl UserTcpService {
                 }
             }
 
-            if answer == ConnectServerAnswer::WrongVersion {
+            if answer == ConnectServerAnswer::WrongProtocol {
                 // Also send correct version.
                 // Write version string size.
-                let supported_client_str_len = SUPPORTED_CLIENT_VERSION.len() as u16;
-                let answer_buf = u16::encode::<u16>(&supported_client_str_len);
+                let supported_protocol = NETWORK_PROTOCOL_VERSION;
+                let answer_buf = u64::encode::<u64>(&supported_protocol);
                 if let Err(e) = answer_buf {
                     return HandleStateResult::HandleStateErr(format!(
-                        "u16::encode::<u16> failed, error: socket ({}) on state (NotConnected) failed on 'supported_client_str_len' (error: {}) at [{}, {}]",
+                        "u64::encode::<u64> failed, error: socket ({}) on state (NotConnected) failed on 'supported_client_str_len' (error: {}) at [{}, {}]",
                         user_info.tcp_addr, e, file!(), line!()
                     ));
                 }
@@ -723,28 +735,14 @@ impl UserTcpService {
                         res => return HandleStateResult::IoErr(res),
                     }
                 }
-
-                let mut supported_client_str = Vec::from(SUPPORTED_CLIENT_VERSION.as_bytes());
-                loop {
-                    match self.write_to_socket(user_info, &mut supported_client_str) {
-                        IoResult::WouldBlock => {
-                            thread::sleep(Duration::from_millis(INTERVAL_TCP_MESSAGE_MS));
-                            continue;
-                        }
-                        IoResult::Ok(_bytes) => {
-                            break;
-                        }
-                        res => return HandleStateResult::IoErr(res),
-                    }
-                }
             }
 
             match answer {
                 ConnectServerAnswer::Ok => {}
-                ConnectServerAnswer::WrongVersion => {
+                ConnectServerAnswer::WrongProtocol => {
                     return HandleStateResult::UserNotConnectedReason(format!(
-                        "socket ({}) on state (NotConnected) was not connected, reason: wrong client version, client version ({}) is not supported.",
-                        user_info.tcp_addr, _client_version_string,
+                        "socket ({}) on state (NotConnected) was not connected, reason: wrong client protocol, client protocol version ({}) is not supported.",
+                        user_info.tcp_addr, _protocol_version,
                     ));
                 }
                 ConnectServerAnswer::WrongPassword => {
