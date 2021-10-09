@@ -110,7 +110,7 @@ impl NetService {
         let users_copy = Arc::clone(&self.connected_users);
         let banned_addrs_copy = Arc::clone(&self.banned_addrs);
         let user_io_lock_copy = Arc::clone(&self.user_enters_leaves_server_lock);
-        thread::spawn(move || {
+        let handle = thread::spawn(move || {
             NetService::service(
                 server_config_copy,
                 logger_copy,
@@ -119,6 +119,7 @@ impl NetService {
                 user_io_lock_copy,
             )
         });
+        handle.join().unwrap();
     }
 
     fn service(
@@ -475,7 +476,9 @@ impl NetService {
                 );
             }
 
-            if let HandleStateResult::HandleStateErr(msg) = user_tcp_service.send_disconnected_notice(&mut user_info, users){
+            if let HandleStateResult::HandleStateErr(msg) =
+                user_tcp_service.send_disconnected_notice(&mut user_info, users)
+            {
                 println!("{} at [{}, {}]", msg, file!(), line!());
             }
         } else {

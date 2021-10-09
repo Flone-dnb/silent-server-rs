@@ -1,6 +1,7 @@
 #![feature(linked_list_remove)]
 
 // Std.
+use std::env;
 use std::io;
 use std::io::*;
 
@@ -17,20 +18,31 @@ fn main() {
 
     let mut net_service = NetService::new();
 
+    let args: Vec<String> = env::args().collect();
+
     loop {
         io::stdout().flush().ok().expect("could not flush stdout");
         let mut input = String::new();
-        io::stdin()
-            .read_line(&mut input)
-            .expect("unable to read user input");
 
-        input.pop(); // pop '\n'
-        if cfg!(windows) {
-            input.pop(); // pop '\r'
+        if args.len() > 1 {
+            if args[1] == "--start" {
+                input = "start".to_string();
+            }
+        } else {
+            io::stdin()
+                .read_line(&mut input)
+                .expect("unable to read user input");
+
+            input.pop(); // pop '\n'
+            if cfg!(windows) {
+                input.pop(); // pop '\r'
+            }
         }
 
         if input == "help" {
-            println!("available commands:");
+            println!("\noptions:");
+            println!("--start - starts the server on launch");
+            println!("\ncommands:");
             println!("start - starts the server with the current configuration");
             println!("config - show the current server configuration");
             println!("config reset - resets the config to default settings");
