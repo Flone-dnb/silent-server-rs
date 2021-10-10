@@ -4,7 +4,7 @@ use block_modes::block_padding::Pkcs7;
 use block_modes::{BlockMode, Ecb};
 use bytevec::{ByteDecodable, ByteEncodable};
 use chrono::prelude::*;
-use num_bigint::{BigUint, ToBigUint};
+use num_bigint::{BigUint, RandomBits, ToBigUint};
 use num_derive::FromPrimitive;
 use num_derive::ToPrimitive;
 use num_traits::cast::FromPrimitive;
@@ -25,6 +25,8 @@ use crate::config_io::ServerConfig;
 use crate::config_io::ServerLogger;
 use crate::global_params::*;
 use crate::services::net_service::*;
+
+const A_B_BITS: u64 = 2048;
 
 #[derive(PartialEq, Copy, Clone)]
 pub enum UserState {
@@ -192,24 +194,19 @@ impl UserTcpService {
         }
     }
     pub fn establish_secure_connection(&self, user_info: &mut UserInfo) -> Result<Vec<u8>, ()> {
-        let key_pg = [
-            (100005107, 13),
-            (100008323, 7),
-            (100000127, 13),
-            (100008023, 11),
-            (100008803, 11),
-        ];
+        // taken from https://www.rfc-editor.org/rfc/rfc5114#section-2.1
+        let p = BigUint::parse_bytes(
+            b"B10B8F96A080E01DDE92DE5EAE5D54EC52C99FBCFB06A3C69A6A9DCA52D23B616073E28675A23D189838EF1E2EE652C013ECB4AEA906112324975C3CD49B83BFACCBDD7D90C4BD7098488E9C219A73724EFFD6FAE5644738FAA31A4FF55BCCC0A151AF5F0DC8B4BD45BF37DF365C1A65E68CFDA76D4DA708DF1FB2BC2E4A4371",
+            16
+        ).unwrap();
+        let g = BigUint::parse_bytes(
+            b"A4D1CBD5C3FD34126765A442EFB99905F8104DD258AC507FD6406CFF14266D31266FEA1E5C41564B777E690F5504F213160217B4B01B886A5E91547F9E2749F4D7FBD7D3B9A92EE1909D0D2263F80A76A6A24C087A091F531DBF0A0169B6A28AD662A4D18E73AFA32D779D5918D08BC8858F4DCEF97C2A24855E6EEB22B3B2E5",
+            16
+        ).unwrap();
 
-        let mut rng = rand::thread_rng();
-        let rnd_index = rng.gen_range(0..key_pg.len());
-
-        let p = key_pg[rnd_index].0;
-        let g = key_pg[rnd_index].1;
-
-        // Send 2 int values: p, g values.
-
-        let p_buf = u32::encode::<u32>(&p);
-        let g_buf = u32::encode::<u32>(&g);
+        // Send 2 values: p (BigUint), g (BigUint) values.
+        let p_buf = bincode::serialize(&p);
+        let g_buf = bincode::serialize(&g);
 
         if let Err(e) = p_buf {
             println!("An error occurred while trying to establish a secure connection, error: {} at [{}, {}]", e, file!(), line!());
@@ -223,11 +220,21 @@ impl UserTcpService {
         }
         let mut g_buf = g_buf.unwrap();
 
-        p_buf.append(&mut g_buf);
+        let p_len = p_buf.len() as u64;
+        let mut p_len = bincode::serialize(&p_len).unwrap();
+
+        let g_len = g_buf.len() as u64;
+        let mut g_len = bincode::serialize(&g_len).unwrap();
+
+        let mut pg_send_buf = Vec::new();
+        pg_send_buf.append(&mut p_len);
+        pg_send_buf.append(&mut p_buf);
+        pg_send_buf.append(&mut g_len);
+        pg_send_buf.append(&mut g_buf);
 
         // Send p and g values.
         loop {
-            match self.write_to_socket(user_info, &mut p_buf) {
+            match self.write_to_socket(user_info, &mut pg_send_buf) {
                 IoResult::Fin => {
                     println!(
                         "Received FIN while establishing a secure connection with {} at [{}, {}]",
@@ -258,28 +265,29 @@ impl UserTcpService {
         }
 
         // Generate secret key 'a'.
-
-        let a = rng.gen_range(10e5..10e18);
+        let mut rng = rand::thread_rng();
+        let a: BigUint = rng.sample(RandomBits::new(A_B_BITS));
 
         // Generate open key 'A'.
-
-        let g_big = g.to_biguint().unwrap();
-        let a_big = a.to_biguint().unwrap();
-        let p_big = p.to_biguint().unwrap();
-        let a_open = g_big.modpow(&a_big, &p_big);
+        let a_open = g.modpow(&a, &p);
 
         // Prepare to send open key 'A'.
+        let a_open_buf = bincode::serialize(&a_open);
+        if let Err(e) = a_open_buf {
+            println!("An error occurred while trying to establish a secure connection, error: {} at [{}, {}]", e, file!(), line!());
+            return Err(());
+        }
+        let mut a_open_buf = a_open_buf.unwrap();
 
-        let mut a_open_buf = a_open.to_bytes_le();
-
-        // Send open key 'A' size.
+        // Send open key 'A'.
         let a_open_len = a_open_buf.len() as u64;
-        let a_open_len_buf = u64::encode::<u64>(&a_open_len);
+        let a_open_len_buf = bincode::serialize(&a_open_len);
         if let Err(e) = a_open_len_buf {
             println!("An error occurred while trying to establish a secure connection, error: {} at [{}, {}]", e, file!(), line!());
             return Err(());
         }
         let mut a_open_len_buf = a_open_len_buf.unwrap();
+        a_open_len_buf.append(&mut a_open_buf);
         loop {
             match self.write_to_socket(user_info, &mut a_open_len_buf) {
                 IoResult::Fin => {
@@ -311,40 +319,7 @@ impl UserTcpService {
             }
         }
 
-        // Send open key 'A'.
-        loop {
-            match self.write_to_socket(user_info, &mut a_open_buf) {
-                IoResult::Fin => {
-                    println!(
-                        "Received FIN while establishing a secure connection with {} at [{}, {}]",
-                        user_info.tcp_addr,
-                        file!(),
-                        line!()
-                    );
-                    return Err(());
-                }
-                IoResult::WouldBlock => {
-                    thread::sleep(Duration::from_millis(INTERVAL_TCP_MESSAGE_MS));
-                    continue;
-                }
-                IoResult::Err(msg) => {
-                    println!(
-                        "{} at [{}, {}] (socket: {})",
-                        msg,
-                        file!(),
-                        line!(),
-                        user_info.tcp_addr
-                    );
-                    return Err(());
-                }
-                IoResult::Ok(_) => {
-                    break;
-                }
-            }
-        }
-
         // Receive open key 'B' size.
-
         let mut b_open_len_buf = vec![0u8; std::mem::size_of::<u64>()];
         loop {
             match self.read_from_socket(user_info, &mut b_open_len_buf) {
@@ -378,7 +353,7 @@ impl UserTcpService {
         }
 
         // Receive open key 'B'.
-        let b_open_len = u64::decode::<u64>(&b_open_len_buf);
+        let b_open_len = bincode::deserialize::<u64>(&b_open_len_buf);
         if let Err(e) = b_open_len {
             println!(
                 "u64::decode::<u64>() failed, error: {}, at [{}, {}]",
@@ -422,23 +397,21 @@ impl UserTcpService {
             }
         }
 
-        let b_open_big = BigUint::from_bytes_le(&b_open_buf);
+        let b_open_big = bincode::deserialize::<BigUint>(&b_open_buf);
+        if let Err(e) = b_open_big {
+            println!(
+                "bincode::deserialize failed, error: {}, at [{}, {}]",
+                e,
+                file!(),
+                line!()
+            );
+            return Err(());
+        }
+        let b_open_big = b_open_big.unwrap();
 
         // Calculate the secret key.
-
-        let secret_key = b_open_big.modpow(&a_big, &p_big);
-
-        let mut secret_key_str = secret_key.to_str_radix(10);
-
-        if secret_key_str.len() < 16 {
-            loop {
-                secret_key_str += &secret_key_str.clone();
-
-                if secret_key_str.len() >= 16 {
-                    break;
-                }
-            }
-        }
+        let secret_key = b_open_big.modpow(&a, &p);
+        let secret_key_str = secret_key.to_str_radix(10);
 
         Ok(Vec::from(&secret_key_str[0..16]))
     }
