@@ -259,7 +259,7 @@ impl NetService {
         init_time: DateTime<Local>,
     ) {
         let mut buf_u16 = [0u8; 2];
-        let mut _var_u16 = 0u16;
+        let mut data_size = 0u16;
         let mut is_error = true;
         let mut user_tcp_service = UserTcpService::new();
 
@@ -372,13 +372,19 @@ impl NetService {
                     break;
                 }
                 IoResult::Ok(_bytes) => {
-                    let res = u16::decode::<u16>(&buf_u16);
+                    let res = bincode::deserialize(&buf_u16);
                     if let Err(e) = res {
-                        println!("NetService::handle_user::read_from_socket_tcp() failed, error: socket ({}) decode(u16) failed with error: {} at [{}, {}]", addr, e, file!(), line!());
+                        println!(
+                            "Deserialize error for data size on socket ({}), error: {} at [{}, {}]",
+                            addr,
+                            e,
+                            file!(),
+                            line!()
+                        );
                         break;
                     }
 
-                    _var_u16 = res.unwrap();
+                    data_size = res.unwrap();
                 }
             }
 
@@ -389,7 +395,7 @@ impl NetService {
 
             // Using current state and these 2 bytes we know what to do.
             match user_tcp_service.handle_user_state(
-                _var_u16,
+                data_size,
                 &mut user_info,
                 &server_config,
                 &users,

@@ -10,6 +10,7 @@ use num_derive::ToPrimitive;
 use num_traits::cast::FromPrimitive;
 use num_traits::cast::ToPrimitive;
 use rand::Rng;
+use serde::{Deserialize, Serialize};
 
 // Std.
 use std::collections::LinkedList;
@@ -19,6 +20,7 @@ use std::thread;
 use std::time::Duration;
 
 // Custom.
+use super::tcp_packets::*;
 use crate::config_io::ServerConfig;
 use crate::config_io::ServerLogger;
 use crate::global_params::*;
@@ -30,15 +32,16 @@ pub enum UserState {
     Connected,
 }
 
-#[derive(FromPrimitive, ToPrimitive, PartialEq)]
-enum ConnectServerAnswer {
+#[derive(FromPrimitive, ToPrimitive, PartialEq, Clone, Copy, Serialize, Deserialize)]
+pub enum ConnectServerAnswer {
     Ok = 0,
     WrongProtocol = 1,
     UsernameTaken = 2,
     WrongPassword = 3,
+    ServerIsFull = 4,
 }
 
-#[derive(FromPrimitive, ToPrimitive, PartialEq)]
+#[derive(FromPrimitive, ToPrimitive, PartialEq, Serialize, Deserialize)]
 pub enum ServerMessageTcp {
     UserConnected = 0,
     UserDisconnected = 1,
@@ -147,7 +150,7 @@ impl UserTcpService {
     }
     pub fn handle_user_state(
         &mut self,
-        current_u16: u16,
+        data_size: u16,
         user_info: &mut UserInfo,
         server_config: &ServerConfig,
         users: &Arc<Mutex<LinkedList<UserInfo>>>,
@@ -158,7 +161,7 @@ impl UserTcpService {
     ) -> HandleStateResult {
         match self.user_state {
             UserState::NotConnected => self.handle_not_connected_state(
-                current_u16,
+                data_size,
                 user_info,
                 server_config,
                 users,
@@ -168,11 +171,11 @@ impl UserTcpService {
                 server_password,
             ),
             UserState::Connected => {
-                let message_id = ClientMessage::from_u16(current_u16);
+                let message_id = ClientMessage::from_u16(data_size);
                 if message_id.is_none() {
                     return HandleStateResult::HandleStateErr(format!(
                         "ClientMessage::from() failed on value {} at [{}, {}]",
-                        current_u16,
+                        data_size,
                         file!(),
                         line!()
                     ));
@@ -256,7 +259,7 @@ impl UserTcpService {
 
         // Generate secret key 'a'.
 
-        let a = rng.gen_range(1000000u64..10000000000000000000u64);
+        let a = rng.gen_range(10e5..10e18);
 
         // Generate open key 'A'.
 
@@ -441,7 +444,7 @@ impl UserTcpService {
     }
     fn handle_not_connected_state(
         &mut self,
-        current_u16: u16,
+        data_size: u16,
         user_info: &mut UserInfo,
         server_config: &ServerConfig,
         users: &Arc<Mutex<LinkedList<UserInfo>>>,
@@ -450,191 +453,60 @@ impl UserTcpService {
         logger: &Arc<Mutex<ServerLogger>>,
         server_password: &str,
     ) -> HandleStateResult {
-        let message_id = ClientMessage::from_u16(current_u16);
-        if message_id.is_none() {
+        if data_size > TCP_PACKET_MAX_SIZE {
             return HandleStateResult::HandleStateErr(format!(
-                "ClientMessage::from() failed on value {} at [{}, {}]",
-                current_u16,
+                "The received data size ({}) exceeds the limit ({}) for socket ({}) on state: not_connected, at [{}, {}]",
+                data_size, TCP_PACKET_MAX_SIZE, user_info.tcp_addr, file!(), line!()
+            ));
+        }
+
+        // Receive encrypted connect packet.
+        let mut encrypted_connect_packet = vec![0u8; data_size as usize];
+        loop {
+            match self.read_from_socket(user_info, &mut encrypted_connect_packet) {
+                IoResult::WouldBlock => {
+                    thread::sleep(Duration::from_millis(INTERVAL_TCP_MESSAGE_MS));
+                    continue;
+                }
+                IoResult::Ok(_bytes) => {
+                    break;
+                }
+                res => return HandleStateResult::IoErr(res),
+            };
+        }
+
+        // Decrypt packet.
+        type Aes128Ecb = Ecb<Aes128, Pkcs7>;
+        let cipher = Aes128Ecb::new_from_slices(&user_info.secret_key, Default::default()).unwrap();
+        let decrypted_packet = cipher.decrypt_vec(&encrypted_connect_packet);
+        if let Err(e) = decrypted_packet {
+            return HandleStateResult::HandleStateErr(format!(
+                "An error occurred while decrypting a packet, error: {}, at [{}, {}]",
+                e,
                 file!(),
                 line!()
             ));
         }
-        let message_id = message_id.unwrap();
-
-        if message_id != ClientMessage::TryConnect {
+        let decrypted_packet = decrypted_packet.unwrap();
+        let connect_packet = bincode::deserialize::<ClientConnectPacket>(&decrypted_packet);
+        if let Err(e) = connect_packet {
             return HandleStateResult::HandleStateErr(format!(
-                "ClientMessage::from() failed on value {} - incorrect client message on not connected state.",
-                current_u16,
+                "An error occurred while deserializing a packet, error: {}, at [{}, {}]",
+                e,
+                file!(),
+                line!()
             ));
         }
+        let connect_packet = connect_packet.unwrap();
 
-        // Get protocol version.
-        let mut protocol_version_buf = vec![0u8; std::mem::size_of::<u64>()];
-        let mut _protocol_version: u64 = 0;
-        loop {
-            match self.read_from_socket(user_info, &mut protocol_version_buf) {
-                IoResult::WouldBlock => {
-                    thread::sleep(Duration::from_millis(INTERVAL_TCP_MESSAGE_MS));
-                    continue;
-                }
-                IoResult::Ok(_bytes) => {
-                    let res = u64::decode::<u64>(&protocol_version_buf);
-                    if let Err(e) = res {
-                        return HandleStateResult::HandleStateErr(format!(
-                            "u64::decode::<u64>() failed, error: socket ({}) on state (NotConnected) failed (error: {}) at [{}, {}]",
-                            user_info.tcp_addr, e, file!(), line!()
-                        ));
-                    }
-
-                    _protocol_version = res.unwrap();
-
-                    break;
-                }
-                res => return HandleStateResult::IoErr(res),
-            };
-        }
-
-        // Get name string size.
-        let mut client_name_size_buf = vec![0u8; std::mem::size_of::<u16>()];
-        let mut _client_name_size = 0u16;
-        loop {
-            match self.read_from_socket(user_info, &mut client_name_size_buf) {
-                IoResult::WouldBlock => {
-                    thread::sleep(Duration::from_millis(INTERVAL_TCP_MESSAGE_MS));
-                    continue;
-                }
-                IoResult::Ok(_bytes) => {
-                    let res = u16::decode::<u16>(&client_name_size_buf);
-                    if let Err(e) = res {
-                        return HandleStateResult::HandleStateErr(format!(
-                            "u16::decode::<u16>() failed, error: socket ({}) failed to decode (error: {}) at [{}, {}]",
-                            user_info.tcp_addr, e, file!(), line!()
-                        ));
-                    }
-
-                    _client_name_size = res.unwrap();
-
-                    break;
-                }
-                res => return HandleStateResult::IoErr(res),
-            }
-        }
-        if _client_name_size as usize > MAX_USERNAME_SIZE {
-            return HandleStateResult::HandleStateErr(format!(
-                "An error occurred, error: socket ({}) on state (NotConnected) failed because the received username len is too big ({}) while the maximum is {}, at [{}, {}]",
-                user_info.tcp_addr, _client_name_size, MAX_USERNAME_SIZE, file!(), line!()
-            ));
-        }
-
-        // Get name string.
-        let mut client_name_buf = vec![0u8; _client_name_size as usize];
-        let mut _client_name_string = String::new();
-        loop {
-            match self.read_from_socket(user_info, &mut client_name_buf) {
-                IoResult::WouldBlock => {
-                    thread::sleep(Duration::from_millis(INTERVAL_TCP_MESSAGE_MS));
-                    continue;
-                }
-                IoResult::Ok(_bytes) => {
-                    let res = std::str::from_utf8(&client_name_buf);
-                    if let Err(e) = res {
-                        return HandleStateResult::HandleStateErr(format!(
-                            "std::str::from_utf8() failed, error: socket ({}) on state (NotConnected) failed (error: {}) at [{}, {}]",
-                            user_info.tcp_addr, e, file!(), line!()
-                        ));
-                    }
-
-                    _client_name_string = String::from(res.unwrap());
-
-                    break;
-                }
-                res => return HandleStateResult::IoErr(res),
-            };
-        }
-
-        // Get encrypted password string size.
-        let mut encrypted_password_size_buf = vec![0u8; std::mem::size_of::<u16>()];
-        let mut _encrypted_password_size = 0u16;
-        loop {
-            match self.read_from_socket(user_info, &mut encrypted_password_size_buf) {
-                IoResult::WouldBlock => {
-                    thread::sleep(Duration::from_millis(INTERVAL_TCP_MESSAGE_MS));
-                    continue;
-                }
-                IoResult::Ok(_bytes) => {
-                    let res = u16::decode::<u16>(&encrypted_password_size_buf);
-                    if let Err(e) = res {
-                        return HandleStateResult::HandleStateErr(format!(
-                            "u16::decode::<u16>() failed, error: socket ({}) failed to decode (error: {}) at [{}, {}]",
-                            user_info.tcp_addr, e, file!(), line!()
-                        ));
-                    }
-
-                    _encrypted_password_size = res.unwrap();
-
-                    break;
-                }
-                res => return HandleStateResult::IoErr(res),
-            }
-        }
-
-        let mut _password = String::new();
-        if _encrypted_password_size != 0 {
-            if _encrypted_password_size as usize > MAX_PASSWORD_SIZE {
-                return HandleStateResult::HandleStateErr(format!(
-                    "An error occurred, error: socket ({}) on state (NotConnected) failed because the received password len is too big ({}) while the maximum is {}, at [{}, {}]",
-                    user_info.tcp_addr, _encrypted_password_size, MAX_PASSWORD_SIZE, file!(), line!()
-                ));
-            }
-
-            // Get encrypted password string.
-            let mut encrypted_password_buf = vec![0u8; _encrypted_password_size as usize];
-            loop {
-                match self.read_from_socket(user_info, &mut encrypted_password_buf) {
-                    IoResult::WouldBlock => {
-                        thread::sleep(Duration::from_millis(INTERVAL_TCP_MESSAGE_MS));
-                        continue;
-                    }
-                    IoResult::Ok(_bytes) => {
-                        // Decrypt password.
-                        type Aes128Ecb = Ecb<Aes128, Pkcs7>;
-                        let cipher =
-                            Aes128Ecb::new_from_slices(&user_info.secret_key, Default::default())
-                                .unwrap();
-                        let decrypted_password = cipher.decrypt_vec(&encrypted_password_buf);
-                        if let Err(e) = decrypted_password {
-                            return HandleStateResult::HandleStateErr(format!(
-                                "cipher.decrypt_vec() failed, error: {} at [{}, {}]",
-                                e,
-                                file!(),
-                                line!()
-                            ));
-                        }
-                        let decrypted_password = decrypted_password.unwrap();
-                        let password = std::str::from_utf8(&decrypted_password);
-                        if let Err(e) = password {
-                            return HandleStateResult::HandleStateErr(format!(
-                                "std::str::from_utf8() failed, error: socket ({}) on state (NotConnected) failed (error: {}) at [{}, {}]",
-                                user_info.tcp_addr, e, file!(), line!()
-                            ));
-                        }
-                        _password = String::from(password.unwrap());
-
-                        break;
-                    }
-                    res => return HandleStateResult::IoErr(res),
-                };
-            }
-        }
-
+        // Prepare answer.
         let mut answer = ConnectServerAnswer::Ok;
-
         {
             let _guard = user_enters_leaves_server_lock.lock().unwrap();
 
             if !server_password.is_empty() {
                 // Check if the password is correct.
-                if server_password != _password {
+                if server_password != connect_packet.password {
                     answer = ConnectServerAnswer::WrongPassword;
 
                     let mut banned_addrs_guard = banned_addrs.lock().unwrap();
@@ -657,7 +529,7 @@ impl UserTcpService {
             }
 
             // Check if the client protocol is supported.
-            if _protocol_version != NETWORK_PROTOCOL_VERSION {
+            if connect_packet.net_protocol_version != NETWORK_PROTOCOL_VERSION {
                 // Send error (wrong protocol).
                 answer = ConnectServerAnswer::WrongProtocol;
             }
@@ -667,7 +539,7 @@ impl UserTcpService {
             {
                 let users_guard = users.lock().unwrap();
                 for user in users_guard.iter() {
-                    if user.username == _client_name_string {
+                    if user.username == connect_packet.username {
                         name_is_unique = false;
                         break;
                     }
@@ -679,189 +551,82 @@ impl UserTcpService {
                 answer = ConnectServerAnswer::UsernameTaken;
             }
 
-            // Send.
-            let id = answer.to_u16();
-            if id.is_none() {
-                return HandleStateResult::HandleStateErr(format!(
-                    "ToPrimitive::to_u16() failed, error: socket ({}) on state (NotConnected) failed at [{}, {}]",
-                    user_info.tcp_addr,
-                    file!(),
-                    line!()
-                ));
-            }
-            let answer_id = id.unwrap();
-            let answer_buf = u16::encode::<u16>(&answer_id);
-            if let Err(e) = answer_buf {
-                return HandleStateResult::HandleStateErr(format!(
-                    "u16::encode::<u16> failed, error: socket ({}) on state (NotConnected) failed on 'answer_id' (error: {}) at [{}, {}]",
-                    user_info.tcp_addr, e, file!(), line!()
-                ));
-            }
-            let mut answer_buf = answer_buf.unwrap();
-            loop {
-                match self.write_to_socket(user_info, &mut answer_buf) {
-                    IoResult::WouldBlock => {
-                        thread::sleep(Duration::from_millis(INTERVAL_TCP_MESSAGE_MS));
-                        continue;
-                    }
-                    IoResult::Ok(_bytes) => {
-                        break;
-                    }
-                    res => return HandleStateResult::IoErr(res),
-                }
-            }
+            let mut server_connect_packet = ServerTcpConnectPacket::new(answer);
 
             if answer == ConnectServerAnswer::WrongProtocol {
-                // Also send correct version.
-                // Write version string size.
-                let supported_protocol = NETWORK_PROTOCOL_VERSION;
-                let answer_buf = u64::encode::<u64>(&supported_protocol);
-                if let Err(e) = answer_buf {
-                    return HandleStateResult::HandleStateErr(format!(
-                        "u64::encode::<u64> failed, error: socket ({}) on state (NotConnected) failed on 'supported_client_str_len' (error: {}) at [{}, {}]",
-                        user_info.tcp_addr, e, file!(), line!()
-                    ));
+                server_connect_packet.correct_net_protocol = Some(NETWORK_PROTOCOL_VERSION);
+            }
+
+            if answer == ConnectServerAnswer::Ok {
+                // Get info about rooms and users.
+                let mut rooms_info = Vec::new();
+
+                for room in server_config.rooms.iter() {
+                    rooms_info.push(RoomNetInfo {
+                        room_name: room.room_name.clone(),
+                        users: Vec::new(),
+                    });
                 }
-                let mut answer_buf = answer_buf.unwrap();
-                loop {
-                    match self.write_to_socket(user_info, &mut answer_buf) {
-                        IoResult::WouldBlock => {
-                            thread::sleep(Duration::from_millis(INTERVAL_TCP_MESSAGE_MS));
-                            continue;
+
+                {
+                    let users_guard = users.lock().unwrap();
+
+                    for user in users_guard.iter() {
+                        for room in rooms_info.iter_mut() {
+                            if room.room_name == user.room_name {
+                                room.users.push(UserNetInfo {
+                                    username: user.username.clone(),
+                                    ping: user.last_ping,
+                                });
+                                break;
+                            }
                         }
-                        IoResult::Ok(_bytes) => {
-                            break;
-                        }
-                        res => return HandleStateResult::IoErr(res),
                     }
                 }
+
+                server_connect_packet.connected_info = Some(rooms_info);
             }
 
-            match answer {
-                ConnectServerAnswer::Ok => {}
-                ConnectServerAnswer::WrongProtocol => {
-                    return HandleStateResult::UserNotConnectedReason(format!(
-                        "socket ({}) on state (NotConnected) was not connected, reason: wrong client protocol, client protocol version ({}) is not supported.",
-                        user_info.tcp_addr, _protocol_version,
-                    ));
-                }
-                ConnectServerAnswer::WrongPassword => {
-                    return HandleStateResult::UserNotConnectedReason(format!(
-                        "socket ({}) on state (NotConnected) was not connected, reason: wrong password, received password ({}).",
-                        user_info.tcp_addr, _password
-                    ));
-                }
-                ConnectServerAnswer::UsernameTaken => {
-                    return HandleStateResult::UserNotConnectedReason(format!(
-                        "socket ({}) on state (NotConnected) was not connected, reason: username {} is not unique.",
-                        user_info.tcp_addr, _client_name_string,
-                    ));
-                }
-            }
-
-            let mut info_out_buf: Vec<u8> = Vec::new();
-
-            // Send room count.
-            let room_count = server_config.rooms.len() as u16;
-            let room_count_buf = u16::encode::<u16>(&room_count);
-            if let Err(e) = room_count_buf {
-                return HandleStateResult::HandleStateErr(format!(
-                    "u64::encode::<u16> failed, error: socket ({}) on state (NotConnected) failed (error: {}) at [{}, {}]",
+            // Prepare to send.
+            let mut _encrypted_binary_packet = Vec::new();
+            loop {
+                let binary_server_connect_packet = bincode::serialize(&server_connect_packet);
+                if let Err(e) = binary_server_connect_packet {
+                    return HandleStateResult::HandleStateErr(format!(
+                    "An error occurred while serializing, error: socket ({}) on state (NotConnected), error: {}, at [{}, {}]",
                     user_info.tcp_addr, e, file!(), line!()
                 ));
-            }
-            let mut room_count_buf = room_count_buf.unwrap();
-            info_out_buf.append(&mut room_count_buf);
-
-            // Send rooms.
-            for room in server_config.rooms.iter() {
-                // Room len.
-                let room_len = room.room_name.len() as u8;
-                let room_len_buf = u8::encode::<u8>(&room_len);
-                if let Err(e) = room_len_buf {
-                    return HandleStateResult::HandleStateErr(format!(
-                        "u16::encode::<u8> failed, error: socket ({}) on state (NotConnected) failed (error: {}) at [{}, {}]",
-                        user_info.tcp_addr, e, file!(), line!()
-                    ));
                 }
-                let mut room_len_buf = room_len_buf.unwrap();
 
-                info_out_buf.append(&mut room_len_buf);
+                let binary_server_connect_packet = binary_server_connect_packet.unwrap();
 
-                // Room.
-                let mut room_str = Vec::from(room.room_name.as_bytes());
+                // Encrypt packet.
+                let cipher =
+                    Aes128Ecb::new_from_slices(&user_info.secret_key, Default::default()).unwrap();
+                let encrypted_binary_server_connect_packet =
+                    cipher.encrypt_vec(&binary_server_connect_packet);
 
-                info_out_buf.append(&mut room_str);
-            }
-
-            // Send usernames of other users.
-            {
-                let users_guard = users.lock().unwrap();
-
-                let users_count = users_guard.len() as u64;
-                let users_count_buf = u64::encode::<u64>(&users_count);
-                if let Err(e) = users_count_buf {
-                    return HandleStateResult::HandleStateErr(format!(
-                        "u64::encode::<u64> failed, error: socket ({}) on state (NotConnected) failed (error: {}) at [{}, {}]",
-                        user_info.tcp_addr, e, file!(), line!()
-                    ));
-                }
-                let mut users_count_buf = users_count_buf.unwrap();
-                info_out_buf.append(&mut users_count_buf);
-
-                for user in users_guard.iter() {
-                    // Username len.
-                    let username_len = user.username.len() as u16;
-                    let user_name_len_buf = u16::encode::<u16>(&username_len);
-                    if let Err(e) = user_name_len_buf {
-                        return HandleStateResult::HandleStateErr(format!(
-                            "u16::encode::<u16> failed, error: socket ({}) on state (NotConnected) failed (error: {}) at [{}, {}]",
-                            user_info.tcp_addr, e, file!(), line!()
-                        ));
-                    }
-                    let mut user_name_len_buf = user_name_len_buf.unwrap();
-
-                    info_out_buf.append(&mut user_name_len_buf);
-
-                    // Username.
-                    let mut user_name_buf = Vec::from(user.username.as_bytes());
-
-                    info_out_buf.append(&mut user_name_buf);
-
-                    // Room len.
-                    let room_len = user.room_name.len() as u8;
-                    let room_len_buf = u8::encode::<u8>(&room_len);
-                    if let Err(e) = room_len_buf {
-                        return HandleStateResult::HandleStateErr(format!(
-                            "u16::encode::<u8> failed, error: socket ({}) on state (NotConnected) failed (error: {}) at [{}, {}]",
-                            user_info.tcp_addr, e, file!(), line!()
-                        ));
-                    }
-                    let mut room_len_buf = room_len_buf.unwrap();
-
-                    info_out_buf.append(&mut room_len_buf);
-
-                    // Room.
-                    let mut user_room = Vec::from(user.room_name.as_bytes());
-
-                    info_out_buf.append(&mut user_room);
-
-                    // Last ping.
-                    let ping_buf = u16::encode::<u16>(&user.last_ping);
-                    if let Err(e) = ping_buf {
-                        return HandleStateResult::HandleStateErr(format!(
-                            "u16::encode::<u8> failed, error: socket ({}) on state (NotConnected) failed (error: {}) at [{}, {}]",
-                            user_info.tcp_addr, e, file!(), line!()
-                        ));
-                    }
-                    let mut ping_buf = ping_buf.unwrap();
-
-                    info_out_buf.append(&mut ping_buf);
+                if encrypted_binary_server_connect_packet.len() + std::mem::size_of::<u64>()
+                    > TCP_CONNECT_ANSWER_PACKET_MAX_SIZE as usize
+                {
+                    // Let's say the server is full.
+                    server_connect_packet =
+                        ServerTcpConnectPacket::new(ConnectServerAnswer::ServerIsFull);
+                } else {
+                    _encrypted_binary_packet = encrypted_binary_server_connect_packet;
+                    break;
                 }
             }
+
+            let mut send_buffer = Vec::new();
+            let packet_length = _encrypted_binary_packet.len() as u64;
+            let mut packet_length = bincode::serialize(&packet_length).unwrap();
+
+            send_buffer.append(&mut packet_length);
+            send_buffer.append(&mut _encrypted_binary_packet);
 
             loop {
-                match self.write_to_socket(user_info, &mut info_out_buf) {
+                match self.write_to_socket(user_info, &mut send_buffer) {
                     IoResult::WouldBlock => {
                         thread::sleep(Duration::from_millis(INTERVAL_TCP_MESSAGE_MS));
                         continue;
@@ -873,40 +638,79 @@ impl UserTcpService {
                 }
             }
 
-            // Tell others about this new user.
-            // Data:
-            // (u16): data ID = new user
-            // (u16): username len
-            // (size): username
-            let mut newuser_info_out_buf: Vec<u8> = Vec::new();
-
-            let data_id = ServerMessageTcp::UserConnected.to_u16();
-            if data_id.is_none() {
-                return HandleStateResult::HandleStateErr(format!(
-                    "ToPrimitive::to_u16() failed, error: socket ({}) on state (NotConnected) at [{}, {}]",
-                    user_info.tcp_addr, file!(), line!()
-                ));
+            match answer {
+                ConnectServerAnswer::Ok => {}
+                ConnectServerAnswer::ServerIsFull => {
+                    return HandleStateResult::UserNotConnectedReason(format!(
+                        "Info: socket ({} AKA {}) was not connected, reason: the server is full.",
+                        user_info.tcp_addr, &connect_packet.username
+                    ));
+                }
+                ConnectServerAnswer::WrongProtocol => {
+                    return HandleStateResult::UserNotConnectedReason(format!(
+                        "Info: socket ({} AKA {}) was not connected, reason: wrong client protocol, client protocol version ({}) is not supported.",
+                        user_info.tcp_addr, &connect_packet.username, connect_packet.net_protocol_version,
+                    ));
+                }
+                ConnectServerAnswer::WrongPassword => {
+                    return HandleStateResult::UserNotConnectedReason(format!(
+                        "Info: socket ({} AKA {}) was not connected, reason: wrong password, received password \"{}\".",
+                        user_info.tcp_addr, &connect_packet.username, connect_packet.password
+                    ));
+                }
+                ConnectServerAnswer::UsernameTaken => {
+                    return HandleStateResult::UserNotConnectedReason(format!(
+                        "Info: socket ({} AKA {}) was not connected, reason: username \"{}\" is not unique.",
+                        user_info.tcp_addr, &connect_packet.username, connect_packet.username,
+                    ));
+                }
             }
-            let data_id: u16 = data_id.unwrap();
-            let data_id_buf = u16::encode::<u16>(&data_id);
-            if let Err(e) = data_id_buf {
+
+            let user_connected_packet = ServerTcpMessage::UserConnected {
+                username: connect_packet.username.clone(),
+            };
+
+            let binary_user_connected_packet = bincode::serialize(&user_connected_packet);
+            if let Err(e) = binary_user_connected_packet {
                 return HandleStateResult::HandleStateErr(format!(
-                    "u16::encode::<u16> failed, error: socket ({}) on state (NotConnected) failed on 'data_id' (error: {}) at [{}, {}]",
+                    "An error occurred while serializing, error: socket ({}) on state (NotConnected), error: {}, at [{}, {}]",
                     user_info.tcp_addr, e, file!(), line!()
                 ));
             }
-            let mut data_id_buf = data_id_buf.unwrap();
 
-            newuser_info_out_buf.append(&mut data_id_buf);
-            newuser_info_out_buf.append(&mut client_name_size_buf);
-            newuser_info_out_buf.append(&mut client_name_buf);
+            let binary_user_connected_packet = binary_user_connected_packet.unwrap();
 
             // Send info about new user.
             {
                 let mut users_guard = users.lock().unwrap();
                 for user in users_guard.iter_mut() {
+                    // Encrypt packet.
+                    let cipher =
+                        Aes128Ecb::new_from_slices(&user.secret_key, Default::default()).unwrap();
+                    let mut encrypted_binary_user_connected_packet =
+                        cipher.encrypt_vec(&binary_user_connected_packet);
+
+                    // Check packet length.
+                    if encrypted_binary_user_connected_packet.len() > TCP_PACKET_MAX_SIZE as usize {
+                        // should never happen
+                        return HandleStateResult::HandleStateErr(format!(
+                            "Error: the packet size ({}) exceeds the limit ({}), at [{}, {}]",
+                            encrypted_binary_user_connected_packet.len(),
+                            TCP_PACKET_MAX_SIZE,
+                            file!(),
+                            line!()
+                        ));
+                    }
+                    let len = encrypted_binary_user_connected_packet.len() as u16;
+                    let mut len_buf = bincode::serialize(&len).unwrap();
+
+                    // Send.
+                    let mut send_buf: Vec<u8> = Vec::new();
+                    send_buf.append(&mut len_buf);
+                    send_buf.append(&mut encrypted_binary_user_connected_packet);
+
                     loop {
-                        match self.write_to_socket(user, &mut newuser_info_out_buf) {
+                        match self.write_to_socket(user, &mut send_buf) {
                             IoResult::WouldBlock => {
                                 thread::sleep(Duration::from_millis(INTERVAL_TCP_MESSAGE_MS));
                                 continue;
@@ -920,8 +724,8 @@ impl UserTcpService {
                 }
             }
 
-            // New connected user.
-            user_info.username = _client_name_string;
+            // Add new connected user to our users list.
+            user_info.username = connect_packet.username.clone();
             self.user_state = UserState::Connected;
 
             let mut _users_connected = 0;
