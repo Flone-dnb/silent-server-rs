@@ -89,6 +89,79 @@ impl UserTcpService {
             sent_keep_alive_time: Local::now(),
         }
     }
+    pub fn handle_keep_alive_check(&mut self, user_info: &mut UserInfo) -> Result<(), ()> {
+        let time_diff = Local::now() - self.last_keep_alive_check_time;
+        if time_diff.num_seconds() > INTERVAL_KEEP_ALIVE_CHECK_SEC as i64 {
+            if self.sent_keep_alive {
+                // Already did that.
+                let time_diff = Local::now() - self.sent_keep_alive_time;
+                if time_diff.num_seconds() > TIME_TO_ANSWER_TO_KEEP_ALIVE_SEC as i64 {
+                    // no answer was received
+                    return Err(()); // close connection
+                }
+            } else {
+                // Serialize packet.
+                let packet = ServerTcpMessage::KeepAliveCheck;
+
+                let binary_packet = bincode::serialize(&packet);
+                if let Err(e) = binary_packet {
+                    println!(
+                        "bincode::serialize failed, error: {}, at [{}, {}].",
+                        e,
+                        file!(),
+                        line!()
+                    );
+                    return Err(());
+                }
+                let binary_packet = binary_packet.unwrap();
+
+                // Encrypt with user key.
+                type Aes128Ecb = Ecb<Aes128, Pkcs7>;
+                let cipher =
+                    Aes128Ecb::new_from_slices(&user_info.secret_key, Default::default()).unwrap();
+                let mut encrypted_packet = cipher.encrypt_vec(&binary_packet);
+
+                // Prepare message len buffer.
+                let encrypted_message_len = encrypted_packet.len() as u16;
+                let encrypted_message_len_buf = bincode::serialize(&encrypted_message_len);
+                if let Err(e) = encrypted_message_len_buf {
+                    println!(
+                        "bincode::serialize failed, error: {} at [{}, {}].",
+                        e,
+                        file!(),
+                        line!()
+                    );
+                    return Err(());
+                }
+                let mut encrypted_message_len_buf = encrypted_message_len_buf.unwrap();
+
+                encrypted_message_len_buf.append(&mut encrypted_packet);
+
+                loop {
+                    match self.write_to_socket(user_info, &mut encrypted_message_len_buf) {
+                        IoResult::Fin => {
+                            println!("FIN from user {} in keep-alive check.", &user_info.username,);
+                            return Err(());
+                        }
+                        IoResult::WouldBlock => {
+                            thread::sleep(Duration::from_millis(INTERVAL_TCP_MESSAGE_MS));
+                            continue;
+                        }
+                        IoResult::Err(msg) => {
+                            println!("{} at [{}, {}]", msg, file!(), line!());
+                            return Err(());
+                        }
+                        IoResult::Ok(_) => break,
+                    }
+                }
+
+                self.sent_keep_alive = true;
+                self.sent_keep_alive_time = Local::now();
+            }
+        }
+
+        Ok(())
+    }
     pub fn read_from_socket(&self, user_info: &mut UserInfo, buf: &mut [u8]) -> IoResult {
         if buf.is_empty() {
             return IoResult::Err(format!(
@@ -226,12 +299,12 @@ impl UserTcpService {
                         self.handle_user_message(user_info, message, users);
                         HandleStateResult::Ok
                     }
+                    ClientTcpMessage::KeepAliveCheck => HandleStateResult::Ok,
                 }
 
                 // match message_id {
                 //     ClientMessage::UserMessage => self.handle_user_message(user_info, users),
                 //     ClientMessage::EnterRoom => self.handle_user_enters_room(user_info, users),
-                //     ClientMessage::KeepAliveCheck => HandleStateResult::Ok,
                 // }
             }
         }

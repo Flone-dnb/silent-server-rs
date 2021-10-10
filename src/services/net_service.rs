@@ -298,72 +298,12 @@ impl NetService {
                     break;
                 }
                 IoResult::WouldBlock => {
-                    let time_diff = Local::now() - user_tcp_service.last_keep_alive_check_time;
-                    if time_diff.num_seconds() > INTERVAL_KEEP_ALIVE_CHECK_SEC as i64 {
-                        if user_tcp_service.sent_keep_alive {
-                            // Already did that.
-                            let time_diff = Local::now() - user_tcp_service.sent_keep_alive_time;
-                            if time_diff.num_seconds() > TIME_TO_ANSWER_TO_KEEP_ALIVE_SEC as i64 {
-                                // no answer was received
-                                break; // close connection
-                            }
-                        } else {
-                            // Send keep alive check.
-                            let data_id = ServerMessageTcp::KeepAliveCheck.to_u16();
-                            if data_id.is_none() {
-                                println!(
-                                    "ToPrimitive::to_u16() failed, error: socket ({}) at [{}, {}]",
-                                    user_info.tcp_addr,
-                                    file!(),
-                                    line!()
-                                );
-                                break;
-                            }
-                            let data_id: u16 = data_id.unwrap();
-                            let data_id_buf = u16::encode::<u16>(&data_id);
-                            if let Err(e) = data_id_buf {
-                                println!(
-                                    "u16::encode::<u16> failed, error: socket ({}) (error: {}) at [{}, {}]",
-                                    user_info.tcp_addr, e, file!(), line!()
-                                );
-                                break;
-                            }
-                            let mut data_id_buf = data_id_buf.unwrap();
-
-                            let mut _is_fin = false;
-                            loop {
-                                match user_tcp_service
-                                    .write_to_socket(&mut user_info, &mut data_id_buf)
-                                {
-                                    IoResult::Fin => {
-                                        is_error = false;
-                                        _is_fin = true;
-                                        break;
-                                    }
-                                    IoResult::WouldBlock => {
-                                        thread::sleep(Duration::from_millis(
-                                            INTERVAL_TCP_MESSAGE_MS,
-                                        ));
-                                        continue;
-                                    }
-                                    IoResult::Err(msg) => {
-                                        println!("{} at [{}, {}]", msg, file!(), line!());
-                                        _is_fin = true;
-                                        break;
-                                    }
-                                    IoResult::Ok(_) => break,
-                                }
-                            }
-
-                            if _is_fin {
-                                break;
-                            }
-
-                            user_tcp_service.sent_keep_alive = true;
-                            user_tcp_service.sent_keep_alive_time = Local::now();
-                        }
+                    if user_tcp_service
+                        .handle_keep_alive_check(&mut user_info)
+                        .is_err()
+                    {
+                        break;
                     }
-
                     thread::sleep(Duration::from_millis(INTERVAL_TCP_IDLE_MS));
                     continue;
                 }
