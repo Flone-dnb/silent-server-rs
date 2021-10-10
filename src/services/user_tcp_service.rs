@@ -57,7 +57,6 @@ pub enum ClientMessage {
     UserMessage = 0,
     EnterRoom = 1,
     KeepAliveCheck = 2,
-    TryConnect = 3,
 }
 
 pub enum IoResult {
@@ -173,23 +172,67 @@ impl UserTcpService {
                 server_password,
             ),
             UserState::Connected => {
-                let message_id = ClientMessage::from_u16(data_size);
-                if message_id.is_none() {
+                if data_size > TCP_PACKET_MAX_SIZE {
                     return HandleStateResult::HandleStateErr(format!(
-                        "ClientMessage::from() failed on value {} at [{}, {}]",
-                        data_size,
+                "The received data size ({}) exceeds the limit ({}) for socket ({} AKA {}) on state: connected, at [{}, {}]",
+                data_size, TCP_PACKET_MAX_SIZE, user_info.tcp_addr, user_info.username, file!(), line!()
+            ));
+                }
+
+                // Receive encrypted packet.
+                let mut encrypted_packet = vec![0u8; data_size as usize];
+                loop {
+                    match self.read_from_socket(user_info, &mut encrypted_packet) {
+                        IoResult::WouldBlock => {
+                            thread::sleep(Duration::from_millis(INTERVAL_TCP_MESSAGE_MS));
+                            continue;
+                        }
+                        IoResult::Ok(_bytes) => {
+                            break;
+                        }
+                        res => return HandleStateResult::IoErr(res),
+                    };
+                }
+
+                // Decrypt packet.
+                type Aes128Ecb = Ecb<Aes128, Pkcs7>;
+                let cipher =
+                    Aes128Ecb::new_from_slices(&user_info.secret_key, Default::default()).unwrap();
+                let decrypted_packet = cipher.decrypt_vec(&encrypted_packet);
+                if let Err(e) = decrypted_packet {
+                    return HandleStateResult::HandleStateErr(format!(
+                        "An error occurred while decrypting a packet, error: {}, at [{}, {}]",
+                        e,
                         file!(),
                         line!()
                     ));
                 }
-                let message_id = message_id.unwrap();
+                let decrypted_packet = decrypted_packet.unwrap();
 
-                match message_id {
-                    ClientMessage::UserMessage => self.handle_user_message(user_info, users),
-                    ClientMessage::EnterRoom => self.handle_user_enters_room(user_info, users),
-                    ClientMessage::KeepAliveCheck => HandleStateResult::Ok,
-                    ClientMessage::TryConnect => HandleStateResult::Ok, // will be handled above
+                // Deserialize packet.
+                let user_packet = bincode::deserialize::<ClientTcpMessage>(&decrypted_packet);
+                if let Err(e) = user_packet {
+                    return HandleStateResult::HandleStateErr(format!(
+                        "An error occurred while deserializing a packet, error: {}, at [{}, {}]",
+                        e,
+                        file!(),
+                        line!()
+                    ));
                 }
+                let user_packet = user_packet.unwrap();
+
+                match user_packet {
+                    ClientTcpMessage::UserMessage { message } => {
+                        self.handle_user_message(user_info, message, users);
+                        HandleStateResult::Ok
+                    }
+                }
+
+                // match message_id {
+                //     ClientMessage::UserMessage => self.handle_user_message(user_info, users),
+                //     ClientMessage::EnterRoom => self.handle_user_enters_room(user_info, users),
+                //     ClientMessage::KeepAliveCheck => HandleStateResult::Ok,
+                // }
             }
         }
     }
@@ -754,178 +797,55 @@ impl UserTcpService {
     fn handle_user_message(
         &self,
         user_info: &mut UserInfo,
+        message: String,
         users: &Arc<Mutex<LinkedList<UserInfo>>>,
     ) -> HandleStateResult {
-        // (u16) - data ID (user message)
-        // (u16) - username.len()
-        // (size) - username
-        // (u16) - message (encrypted).len()
-        // (size) - message (encrypted)
-
-        // use data ID = ServerMessage::UserMessage
-        let data_id = ServerMessageTcp::UserMessage.to_u16();
-        if data_id.is_none() {
-            return HandleStateResult::HandleStateErr(format!(
-                "ServerMessage::UserMessage.to_u16() failed at [{}, {}]",
-                file!(),
-                line!()
-            ));
-        }
-        let data_id = data_id.unwrap();
-        let data_id_buf = u16::encode::<u16>(&data_id);
-        if let Err(e) = data_id_buf {
-            return HandleStateResult::HandleStateErr(format!(
-                "u16::encode::<u16>() failed on value {} (error: {}) at [{}, {}]",
-                data_id,
-                e,
-                file!(),
-                line!()
-            ));
-        }
-        let mut data_id_buf = data_id_buf.unwrap();
-
-        // Read username len.
-        let mut username_len_buf: Vec<u8> = vec![0u8; std::mem::size_of::<u16>()];
-        loop {
-            match self.read_from_socket(user_info, &mut username_len_buf) {
-                IoResult::WouldBlock => {
-                    thread::sleep(Duration::from_millis(INTERVAL_TCP_MESSAGE_MS));
-                    continue;
-                }
-                IoResult::Ok(_) => {
-                    break;
-                }
-                res => return HandleStateResult::IoErr(res),
-            }
-        }
-        let username_len = u16::decode::<u16>(&username_len_buf);
-        if let Err(e) = username_len {
-            return HandleStateResult::HandleStateErr(format!(
-                "u16::decode::<u16>() failed, error: {} at [{}, {}]",
-                e,
-                file!(),
-                line!()
-            ));
-        }
-        let username_len = username_len.unwrap();
-        if username_len as usize > MAX_USERNAME_SIZE {
-            return HandleStateResult::HandleStateErr(format!(
-                "An error occurred, error: socket ({}) on state (Connected) failed because the received username len is too big ({}) while the maximum is {}, at [{}, {}]",
-                user_info.tcp_addr, username_len, MAX_USERNAME_SIZE, file!(), line!()
-            ));
-        }
-
-        // Read username.
-        let mut username_buf: Vec<u8> = vec![0u8; username_len as usize];
-        loop {
-            match self.read_from_socket(user_info, &mut username_buf) {
-                IoResult::WouldBlock => {
-                    thread::sleep(Duration::from_millis(INTERVAL_TCP_MESSAGE_MS));
-                    continue;
-                }
-                IoResult::Ok(_) => {
-                    break;
-                }
-                res => return HandleStateResult::IoErr(res),
-            }
-        }
-
-        // Read encrypted message len.
-        let mut encrypted_message_len_buf: Vec<u8> = vec![0u8; std::mem::size_of::<u16>()];
-        loop {
-            match self.read_from_socket(user_info, &mut encrypted_message_len_buf) {
-                IoResult::WouldBlock => {
-                    thread::sleep(Duration::from_millis(INTERVAL_TCP_MESSAGE_MS));
-                    continue;
-                }
-                IoResult::Ok(_) => {
-                    break;
-                }
-                res => return HandleStateResult::IoErr(res),
-            }
-        }
-        let encrypted_message_len = u16::decode::<u16>(&encrypted_message_len_buf);
-        if let Err(e) = encrypted_message_len {
-            return HandleStateResult::HandleStateErr(format!(
-                "u16::decode::<u16>() failed, error: {} at [{}, {}]",
-                e,
-                file!(),
-                line!()
-            ));
-        }
-        let encrypted_message_len = encrypted_message_len.unwrap();
-        if encrypted_message_len as usize > MAX_MESSAGE_SIZE + 64 {
-            return HandleStateResult::HandleStateErr(format!(
-                "An error occurred, error: socket ({}) on state (Connected) failed because the received encrypted message len is too big ({}) while the maximum is {}, at [{}, {}]",
-                user_info.tcp_addr, encrypted_message_len, MAX_MESSAGE_SIZE, file!(), line!()
-            ));
-        }
-
-        // Read message.
-        let mut encrypted_message_buf: Vec<u8> = vec![0u8; encrypted_message_len as usize];
-        loop {
-            match self.read_from_socket(user_info, &mut encrypted_message_buf) {
-                IoResult::WouldBlock => {
-                    thread::sleep(Duration::from_millis(INTERVAL_TCP_MESSAGE_MS));
-                    continue;
-                }
-                IoResult::Ok(_) => {
-                    break;
-                }
-                res => return HandleStateResult::IoErr(res),
-            }
-        }
-
         // Check spam protection.
         let time_diff = Local::now() - user_info.last_text_message_sent;
         if time_diff.num_seconds() < SPAM_PROTECTION_SEC as i64 {
-            // can't happen with the default client version
+            // can't happen with the default (unchanged) client version
             return HandleStateResult::HandleStateErr(format!(
-                "the user '{}' tried sending text messages too quick (which should not happen with the default client version) at [{}, {}]",
-                user_info.username, file!(), line!()
+                "the user \"{}\" tried sending text messages too quick (which should not happen with the default (unchanged) client version).",
+                user_info.username
             ));
         }
 
         user_info.last_text_message_sent = Local::now();
 
-        // Decrypt user message.
-        type Aes128Ecb = Ecb<Aes128, Pkcs7>;
-        let cipher = Aes128Ecb::new_from_slices(&user_info.secret_key, Default::default()).unwrap();
-        let decrypted_message = cipher.decrypt_vec(&encrypted_message_buf);
-        if let Err(e) = decrypted_message {
+        // Serialize packet.
+        let packet = ServerTcpMessage::UserMessage {
+            username: user_info.username.clone(),
+            message,
+        };
+
+        let binary_packet = bincode::serialize(&packet);
+        if let Err(e) = binary_packet {
             return HandleStateResult::HandleStateErr(format!(
-                "cipher.decrypt_vec() failed, error: {} at [{}, {}]",
+                "bincode::serialize failed, error: {}, at [{}, {}].",
                 e,
                 file!(),
                 line!()
             ));
         }
-        let user_message = decrypted_message.unwrap();
-
-        // Combine all to one buffer.
-        let mut out_buf: Vec<u8> = Vec::new();
-        out_buf.append(&mut data_id_buf);
-        out_buf.append(&mut username_len_buf);
-        out_buf.append(&mut username_buf);
+        let binary_packet = binary_packet.unwrap();
 
         // Send to all.
         {
             let mut users_guard = users.lock().unwrap();
             for user in users_guard.iter_mut() {
                 if user.room_name == user_info.room_name {
-                    let mut copy_buf = out_buf.clone();
-
                     // Encrypt with user key.
+                    type Aes128Ecb = Ecb<Aes128, Pkcs7>;
                     let cipher =
                         Aes128Ecb::new_from_slices(&user.secret_key, Default::default()).unwrap();
-                    let mut encrypted_message = cipher.encrypt_vec(&user_message);
+                    let mut encrypted_packet = cipher.encrypt_vec(&binary_packet);
 
                     // Prepare message len buffer.
-                    let encrypted_message_len = encrypted_message.len() as u16;
-                    let encrypted_message_len_buf = u16::encode::<u16>(&encrypted_message_len);
+                    let encrypted_message_len = encrypted_packet.len() as u16;
+                    let encrypted_message_len_buf = bincode::serialize(&encrypted_message_len);
                     if let Err(e) = encrypted_message_len_buf {
                         return HandleStateResult::HandleStateErr(format!(
-                            "u16::encode::<u16>() failed, error: {} at [{}, {}]",
+                            "bincode::serialize failed, error: {} at [{}, {}].",
                             e,
                             file!(),
                             line!()
@@ -933,10 +853,9 @@ impl UserTcpService {
                     }
                     let mut encrypted_message_len_buf = encrypted_message_len_buf.unwrap();
 
-                    copy_buf.append(&mut encrypted_message_len_buf);
-                    copy_buf.append(&mut encrypted_message);
+                    encrypted_message_len_buf.append(&mut encrypted_packet);
 
-                    match self.write_to_socket(user, &mut copy_buf) {
+                    match self.write_to_socket(user, &mut encrypted_message_len_buf) {
                         IoResult::WouldBlock => {
                             thread::sleep(Duration::from_millis(INTERVAL_TCP_MESSAGE_MS));
                             continue;
