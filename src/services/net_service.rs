@@ -129,8 +129,6 @@ impl NetService {
         banned_addrs: Arc<Mutex<Option<Vec<BannedAddress>>>>,
         user_enters_leaves_server_lock: Arc<Mutex<()>>,
     ) {
-        let init_time = Local::now();
-
         let listener_socket = TcpListener::bind(format!("0.0.0.0:{}", server_config.server_port));
 
         if let Err(e) = listener_socket {
@@ -225,6 +223,19 @@ impl NetService {
                 continue;
             }
 
+            let user_info = UserInfo {
+                username: String::from(""),
+                room_name: String::from(DEFAULT_ROOM_NAME),
+                last_ping: 0,
+                tcp_addr: addr,
+                tcp_socket: socket,
+                udp_socket: None,
+                tcp_io_mutex: Arc::new(Mutex::new(())),
+                last_text_message_sent: Local::now(),
+                last_time_entered_room: Local::now(),
+                secret_key: Vec::new(),
+            };
+
             let logger_copy = Arc::clone(&logger);
             let users_copy = Arc::clone(&users);
             let config_copy = server_config.clone();
@@ -233,48 +244,31 @@ impl NetService {
             let server_password_copy = server_config.server_password.clone();
             thread::spawn(move || {
                 NetService::handle_user(
-                    socket,
-                    addr,
+                    user_info,
                     config_copy,
                     logger_copy,
                     users_copy,
                     banned_addrs_copy,
                     user_io_lock_copy,
                     server_password_copy,
-                    init_time,
                 )
             });
         }
     }
 
     fn handle_user(
-        socket: TcpStream,
-        addr: SocketAddr,
+        mut user_info: UserInfo,
         server_config: ServerConfig,
         logger: Arc<Mutex<ServerLogger>>,
         users: Arc<Mutex<LinkedList<UserInfo>>>,
         banned_addrs: Arc<Mutex<Option<Vec<BannedAddress>>>>,
         user_enters_leaves_server_lock: Arc<Mutex<()>>,
         server_password: String,
-        init_time: DateTime<Local>,
     ) {
         let mut buf_u16 = [0u8; 2];
-        let mut data_size = 0u16;
+        let mut _next_packet_size = 0u16;
         let mut is_error = true;
         let mut user_tcp_service = UserTcpService::new();
-
-        let mut user_info = UserInfo {
-            username: String::from(""),
-            room_name: String::from(DEFAULT_ROOM_NAME),
-            last_ping: 0,
-            tcp_addr: addr,
-            tcp_socket: socket,
-            udp_socket: None,
-            tcp_io_mutex: Arc::new(Mutex::new(())),
-            last_text_message_sent: init_time,
-            last_time_entered_room: init_time,
-            secret_key: Vec::new(),
-        };
 
         match user_tcp_service.establish_secure_connection(&mut user_info) {
             Ok(key) => {
@@ -316,7 +310,7 @@ impl NetService {
                     if let Err(e) = res {
                         println!(
                             "Deserialize error for data size on socket ({}), error: {} at [{}, {}]",
-                            addr,
+                            user_info.tcp_addr,
                             e,
                             file!(),
                             line!()
@@ -324,7 +318,7 @@ impl NetService {
                         break;
                     }
 
-                    data_size = res.unwrap();
+                    _next_packet_size = res.unwrap();
                 }
             }
 
@@ -335,7 +329,7 @@ impl NetService {
 
             // Using current state and these 2 bytes we know what to do.
             match user_tcp_service.handle_user_state(
-                data_size,
+                _next_packet_size,
                 &mut user_info,
                 &server_config,
                 &users,
@@ -371,7 +365,7 @@ impl NetService {
             {
                 // Start UDP service.
                 let username_copy = user_info.username.clone();
-                let addr_copy = addr;
+                let addr_copy = user_info.tcp_addr;
                 let users_copy = Arc::clone(&users);
                 let r_clone = Arc::clone(&udp_receiver);
                 let secret_key_clone = user_info.secret_key.clone();
