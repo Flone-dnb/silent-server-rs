@@ -2,12 +2,11 @@
 use aes::Aes128;
 use block_modes::block_padding::Pkcs7;
 use block_modes::{BlockMode, Ecb};
-use bytevec::{ByteDecodable, ByteEncodable};
+use bytevec::ByteEncodable;
 use chrono::prelude::*;
-use num_bigint::{BigUint, RandomBits, ToBigUint};
+use num_bigint::{BigUint, RandomBits};
 use num_derive::FromPrimitive;
 use num_derive::ToPrimitive;
-use num_traits::cast::FromPrimitive;
 use num_traits::cast::ToPrimitive;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
@@ -300,12 +299,11 @@ impl UserTcpService {
                         HandleStateResult::Ok
                     }
                     ClientTcpMessage::KeepAliveCheck => HandleStateResult::Ok,
+                    ClientTcpMessage::UserEnterRoom { room_name } => {
+                        self.handle_user_enters_room(user_info, server_config, room_name, users);
+                        HandleStateResult::Ok
+                    }
                 }
-
-                // match message_id {
-                //     ClientMessage::UserMessage => self.handle_user_message(user_info, users),
-                //     ClientMessage::EnterRoom => self.handle_user_enters_room(user_info, users),
-                // }
             }
         }
     }
@@ -661,7 +659,11 @@ impl UserTcpService {
                 answer = ConnectServerAnswer::UsernameTaken;
             }
 
-            let mut server_connect_packet = ServerTcpConnectPacket::new(answer);
+            let mut server_connect_packet = ServerTcpConnectPacket {
+                answer,
+                correct_net_protocol: None,
+                connected_info: None,
+            };
 
             if answer == ConnectServerAnswer::WrongProtocol {
                 server_connect_packet.correct_net_protocol = Some(NETWORK_PROTOCOL_VERSION);
@@ -720,8 +722,11 @@ impl UserTcpService {
                     > TCP_CONNECT_ANSWER_PACKET_MAX_SIZE as usize
                 {
                     // Let's say the server is full.
-                    server_connect_packet =
-                        ServerTcpConnectPacket::new(ConnectServerAnswer::ServerIsFull);
+                    server_connect_packet = ServerTcpConnectPacket {
+                        answer: ConnectServerAnswer::ServerIsFull,
+                        correct_net_protocol: None,
+                        connected_info: None,
+                    };
                 } else {
                     _encrypted_binary_packet = encrypted_binary_server_connect_packet;
                     break;
@@ -955,128 +960,10 @@ impl UserTcpService {
     fn handle_user_enters_room(
         &self,
         user_info: &mut UserInfo,
+        server_config: &ServerConfig,
+        room_to_enter: String,
         users: &Arc<Mutex<LinkedList<UserInfo>>>,
     ) -> HandleStateResult {
-        // (u16) - data ID (enters room)
-        // (u16) - username.len()
-        // (size) - username
-        // (u8) - room name.len()
-        // (size) - room name
-
-        // use data ID = ServerMessage::UserEntersRoom
-        let data_id = ServerMessageTcp::UserEntersRoom.to_u16();
-        if data_id.is_none() {
-            return HandleStateResult::HandleStateErr(format!(
-                "ServerMessage::UserEntersRoom.to_u16() failed at [{}, {}]",
-                file!(),
-                line!()
-            ));
-        }
-        let data_id = data_id.unwrap();
-        let data_id_buf = u16::encode::<u16>(&data_id);
-        if let Err(e) = data_id_buf {
-            return HandleStateResult::HandleStateErr(format!(
-                "u16::encode::<u16>() failed on value {} (error: {}) at [{}, {}]",
-                data_id,
-                e,
-                file!(),
-                line!()
-            ));
-        }
-        let mut data_id_buf = data_id_buf.unwrap();
-
-        // Read username len.
-        let mut username_len_buf: Vec<u8> = vec![0u8; std::mem::size_of::<u16>()];
-        loop {
-            match self.read_from_socket(user_info, &mut username_len_buf) {
-                IoResult::WouldBlock => {
-                    thread::sleep(Duration::from_millis(INTERVAL_TCP_MESSAGE_MS));
-                    continue;
-                }
-                IoResult::Ok(_) => {
-                    break;
-                }
-                res => return HandleStateResult::IoErr(res),
-            }
-        }
-        let username_len = u16::decode::<u16>(&username_len_buf);
-        if let Err(e) = username_len {
-            return HandleStateResult::HandleStateErr(format!(
-                "u16::decode::<u16>() failed, error: {} at [{}, {}]",
-                e,
-                file!(),
-                line!()
-            ));
-        }
-        let username_len = username_len.unwrap();
-        if username_len as usize > MAX_USERNAME_SIZE {
-            return HandleStateResult::HandleStateErr(format!(
-                "An error occurred, error: socket ({}) on state (Connected) failed because the received username len is too big ({}) while the maximum is {}, at [{}, {}]",
-                user_info.tcp_addr, username_len, MAX_USERNAME_SIZE, file!(), line!()
-            ));
-        }
-
-        // Read username.
-        let mut username_buf: Vec<u8> = vec![0u8; username_len as usize];
-        loop {
-            match self.read_from_socket(user_info, &mut username_buf) {
-                IoResult::WouldBlock => {
-                    thread::sleep(Duration::from_millis(INTERVAL_TCP_MESSAGE_MS));
-                    continue;
-                }
-                IoResult::Ok(_) => {
-                    break;
-                }
-                res => return HandleStateResult::IoErr(res),
-            }
-        }
-
-        // Read roomname len.
-        let mut room_name_len_buf: Vec<u8> = vec![0u8; std::mem::size_of::<u8>()];
-        loop {
-            match self.read_from_socket(user_info, &mut room_name_len_buf) {
-                IoResult::WouldBlock => {
-                    thread::sleep(Duration::from_millis(INTERVAL_TCP_MESSAGE_MS));
-                    continue;
-                }
-                IoResult::Ok(_) => {
-                    break;
-                }
-                res => return HandleStateResult::IoErr(res),
-            }
-        }
-        let room_name_len = u8::decode::<u8>(&room_name_len_buf);
-        if let Err(e) = room_name_len {
-            return HandleStateResult::HandleStateErr(format!(
-                "u16::decode::<u8>() failed, error: {} at [{}, {}]",
-                e,
-                file!(),
-                line!()
-            ));
-        }
-        let room_name_len = room_name_len.unwrap();
-        if room_name_len as usize > MAX_USERNAME_SIZE {
-            return HandleStateResult::HandleStateErr(format!(
-                "An error occurred, error: socket ({}) on state (Connected) failed because the received room name len is too big ({}) while the maximum is {}, at [{}, {}]",
-                user_info.tcp_addr, room_name_len, MAX_USERNAME_SIZE, file!(), line!()
-            ));
-        }
-
-        // Read room name.
-        let mut room_name_buf: Vec<u8> = vec![0u8; room_name_len as usize];
-        loop {
-            match self.read_from_socket(user_info, &mut room_name_buf) {
-                IoResult::WouldBlock => {
-                    thread::sleep(Duration::from_millis(INTERVAL_TCP_MESSAGE_MS));
-                    continue;
-                }
-                IoResult::Ok(_) => {
-                    break;
-                }
-                res => return HandleStateResult::IoErr(res),
-            }
-        }
-
         // Check spam protection.
         let time_diff = Local::now() - user_info.last_time_entered_room;
         if time_diff.num_seconds() < SPAM_PROTECTION_SEC as i64 {
@@ -1089,39 +976,86 @@ impl UserTcpService {
 
         user_info.last_time_entered_room = Local::now();
 
-        let room_name = String::from_utf8(room_name_buf.clone());
-        if let Err(e) = room_name {
+        // use '.len' instead of '.chars().count()'
+        // because we only care about byte length.
+        if room_to_enter.len() > MAX_USERNAME_SIZE {
             return HandleStateResult::HandleStateErr(format!(
-                "String::from_utf8() failed, error: socket ({}) on state (Connected) failed, reason: ({}), at [{}, {}]",
-                user_info.tcp_addr, e, file!(), line!()
+                "the user \"{}\" is entering a room, with the name that is too big ({}/{}) (which should not happen with the default (unchanged) client version).",
+                user_info.username, room_to_enter.len(), MAX_MESSAGE_SIZE
             ));
         }
-        let room_name = room_name.unwrap();
+
+        // Check if this room exists.
+        let mut found_room = false;
+        for room in server_config.rooms.iter() {
+            if room.room_name == room_to_enter {
+                found_room = true;
+                break;
+            }
+        }
+        if found_room == false {
+            return HandleStateResult::HandleStateErr(format!(
+                "the user \"{}\" is entering a room ({}) that does not exist (which should not happen with the default (unchanged) client version).",
+                user_info.username, room_to_enter
+            ));
+        }
+
+        // Change room for this user.
         {
-            // change room for this user
             let mut users_guard = users.lock().unwrap();
             for user in users_guard.iter_mut() {
                 if user.username == user_info.username {
-                    user.room_name = room_name.clone();
+                    user.room_name = room_to_enter.clone();
                     break;
                 }
             }
-        }
-        user_info.room_name = room_name;
 
-        // Combine all to one buffer.
-        let mut out_buf: Vec<u8> = Vec::new();
-        out_buf.append(&mut data_id_buf);
-        out_buf.append(&mut username_len_buf);
-        out_buf.append(&mut username_buf);
-        out_buf.append(&mut room_name_len_buf);
-        out_buf.append(&mut room_name_buf);
+            user_info.room_name = room_to_enter.clone();
+        }
+
+        // Serialize packet.
+        let packet = ServerTcpMessage::UserEntersRoom {
+            username: user_info.username.clone(),
+            room_enters: room_to_enter,
+        };
+
+        let binary_packet = bincode::serialize(&packet);
+        if let Err(e) = binary_packet {
+            return HandleStateResult::HandleStateErr(format!(
+                "bincode::serialize failed, error: {}, at [{}, {}].",
+                e,
+                file!(),
+                line!()
+            ));
+        }
+        let binary_packet = binary_packet.unwrap();
 
         // Send to all.
         {
             let mut users_guard = users.lock().unwrap();
             for user in users_guard.iter_mut() {
-                match self.write_to_socket(user, &mut out_buf) {
+                // Encrypt with user key.
+                type Aes128Ecb = Ecb<Aes128, Pkcs7>;
+                let cipher =
+                    Aes128Ecb::new_from_slices(&user.secret_key, Default::default()).unwrap();
+                let mut encrypted_packet = cipher.encrypt_vec(&binary_packet);
+
+                // Prepare len buffer.
+                let encrypted_len = encrypted_packet.len() as u16;
+                let encrypted_len_buf = bincode::serialize(&encrypted_len);
+                if let Err(e) = encrypted_len_buf {
+                    return HandleStateResult::HandleStateErr(format!(
+                        "bincode::serialize failed, error: {} at [{}, {}].",
+                        e,
+                        file!(),
+                        line!()
+                    ));
+                }
+                let mut encrypted_len_buf = encrypted_len_buf.unwrap();
+
+                encrypted_len_buf.append(&mut encrypted_packet);
+
+                match self.write_to_socket(user, &mut encrypted_len_buf) {
                     IoResult::WouldBlock => {
                         thread::sleep(Duration::from_millis(INTERVAL_TCP_MESSAGE_MS));
                         continue;
