@@ -74,7 +74,8 @@ pub struct NetService {
     pub server_config: ServerConfig,
     connected_users: Arc<Mutex<LinkedList<UserInfo>>>,
     logger: Arc<Mutex<ServerLogger>>,
-    user_enters_leaves_server_lock: Arc<Mutex<()>>,
+    user_enters_leaves_server_tcp_lock: Arc<Mutex<()>>,
+    user_enters_leaves_server_udp_lock: Arc<Mutex<()>>,
     banned_addrs: Arc<Mutex<Option<Vec<BannedAddress>>>>,
     is_running: bool,
 }
@@ -85,7 +86,8 @@ impl NetService {
             server_config: ServerConfig::new().unwrap(),
             is_running: false,
             connected_users: Arc::new(Mutex::new(LinkedList::new())),
-            user_enters_leaves_server_lock: Arc::new(Mutex::new(())),
+            user_enters_leaves_server_tcp_lock: Arc::new(Mutex::new(())),
+            user_enters_leaves_server_udp_lock: Arc::new(Mutex::new(())),
             logger: Arc::new(Mutex::new(ServerLogger::new())),
             banned_addrs: Arc::new(Mutex::new(Some(Vec::new()))),
         }
@@ -111,31 +113,12 @@ impl NetService {
 
         self.is_running = true;
 
-        let server_config_copy = self.server_config.clone();
-        let logger_copy = Arc::clone(&self.logger);
-        let users_copy = Arc::clone(&self.connected_users);
-        let banned_addrs_copy = Arc::clone(&self.banned_addrs);
-        let user_io_lock_copy = Arc::clone(&self.user_enters_leaves_server_lock);
-        let handle = thread::spawn(move || {
-            NetService::service(
-                server_config_copy,
-                logger_copy,
-                users_copy,
-                banned_addrs_copy,
-                user_io_lock_copy,
-            )
-        });
-        handle.join().unwrap();
+        self.service();
     }
 
-    fn service(
-        server_config: ServerConfig,
-        logger: Arc<Mutex<ServerLogger>>,
-        users: Arc<Mutex<LinkedList<UserInfo>>>,
-        banned_addrs: Arc<Mutex<Option<Vec<BannedAddress>>>>,
-        user_enters_leaves_server_lock: Arc<Mutex<()>>,
-    ) {
-        let listener_socket = TcpListener::bind(format!("0.0.0.0:{}", server_config.server_port));
+    fn service(&self) {
+        let listener_socket =
+            TcpListener::bind(format!("0.0.0.0:{}", self.server_config.server_port));
 
         if let Err(e) = listener_socket {
             println!(
@@ -149,11 +132,11 @@ impl NetService {
         let listener_socket = listener_socket.unwrap();
 
         {
-            let mut logger_guard = logger.lock().unwrap();
+            let mut logger_guard = self.logger.lock().unwrap();
 
             if let Err(e) = logger_guard.println_and_log(&format!(
                 "Ready. Listening on port {} for connection requests...",
-                server_config.server_port
+                self.server_config.server_port
             )) {
                 println!(
                     "ServerLogger.println_and_log() failed, error: {} at [{}, {}]",
@@ -181,7 +164,7 @@ impl NetService {
 
             // Check if this IP is banned.
             {
-                let mut banned_addrs_guard = banned_addrs.lock().unwrap();
+                let mut banned_addrs_guard = self.banned_addrs.lock().unwrap();
 
                 // keep only banned in the vec
                 // use 'Option' to move out of mutex
@@ -242,12 +225,13 @@ impl NetService {
                 secret_key: Vec::new(),
             };
 
-            let logger_copy = Arc::clone(&logger);
-            let users_copy = Arc::clone(&users);
-            let config_copy = server_config.clone();
-            let banned_addrs_copy = Arc::clone(&banned_addrs);
-            let user_io_lock_copy = Arc::clone(&user_enters_leaves_server_lock);
-            let server_password_copy = server_config.server_password.clone();
+            let logger_copy = Arc::clone(&self.logger);
+            let users_copy = Arc::clone(&self.connected_users);
+            let config_copy = self.server_config.clone();
+            let banned_addrs_copy = Arc::clone(&self.banned_addrs);
+            let user_tcp_io_lock_copy = Arc::clone(&self.user_enters_leaves_server_tcp_lock);
+            let user_udp_io_lock_copy = Arc::clone(&self.user_enters_leaves_server_udp_lock);
+            let server_password_copy = self.server_config.server_password.clone();
             thread::spawn(move || {
                 NetService::handle_user(
                     user_info,
@@ -255,7 +239,8 @@ impl NetService {
                     logger_copy,
                     users_copy,
                     banned_addrs_copy,
-                    user_io_lock_copy,
+                    user_tcp_io_lock_copy,
+                    user_udp_io_lock_copy,
                     server_password_copy,
                 )
             });
@@ -268,7 +253,8 @@ impl NetService {
         logger: Arc<Mutex<ServerLogger>>,
         users: Arc<Mutex<LinkedList<UserInfo>>>,
         banned_addrs: Arc<Mutex<Option<Vec<BannedAddress>>>>,
-        user_enters_leaves_server_lock: Arc<Mutex<()>>,
+        user_enters_leaves_server_tcp_lock: Arc<Mutex<()>>,
+        user_enters_leaves_server_udp_lock: Arc<Mutex<()>>,
         server_password: String,
     ) {
         let mut buf_u16 = [0u8; 2];
@@ -340,7 +326,7 @@ impl NetService {
                 &server_config,
                 &users,
                 &banned_addrs,
-                &user_enters_leaves_server_lock,
+                &user_enters_leaves_server_tcp_lock,
                 &logger,
                 &server_password,
             ) {
@@ -374,6 +360,7 @@ impl NetService {
                 let addr_copy = user_info.tcp_addr;
                 let users_copy = Arc::clone(&users);
                 let r_clone = Arc::clone(&udp_receiver);
+                let lock_clone = Arc::clone(&user_enters_leaves_server_udp_lock);
                 let secret_key_clone = user_info.secret_key.clone();
                 thread::spawn(move || {
                     NetService::udp_service(
@@ -381,6 +368,7 @@ impl NetService {
                         addr_copy,
                         users_copy,
                         r_clone,
+                        lock_clone,
                         secret_key_clone,
                     )
                 });
@@ -397,7 +385,7 @@ impl NetService {
         if user_tcp_service.user_state == UserState::Connected {
             let mut _users_connected = 0;
             {
-                let _guard = user_enters_leaves_server_lock.lock().unwrap();
+                let _guard = user_enters_leaves_server_tcp_lock.lock().unwrap();
 
                 // Erase from global users list.
                 let mut users_guard = users.lock().unwrap();
@@ -452,6 +440,7 @@ impl NetService {
         addr: SocketAddr,
         users: Arc<Mutex<LinkedList<UserInfo>>>,
         tcp_listen: Arc<Mutex<mpsc::Receiver<()>>>,
+        user_connect_disconnect_server_lock: Arc<Mutex<()>>,
         secret_key: Vec<u8>,
     ) {
         let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP));
@@ -501,10 +490,15 @@ impl NetService {
             return;
         }
 
-        let user_udp_service = UserUdpService::new();
+        let user_udp_service = UserUdpService::new(secret_key, username);
 
         // Wait for "connection".
-        match user_udp_service.wait_for_connection(&udp_socket, addr, &username, &users) {
+        match user_udp_service.wait_for_connection(
+            &udp_socket,
+            addr,
+            &users,
+            &user_connect_disconnect_server_lock,
+        ) {
             Ok(()) => {}
             Err(msg) => {
                 println!("{} at [{}, {}]", msg, file!(), line!());
@@ -512,50 +506,11 @@ impl NetService {
             }
         }
 
-        // Prepare packet about user ping to all.
-        let mut ping_info_buf = Vec::new();
-        match user_udp_service.prepare_ping_info_buf(&username, &mut ping_info_buf) {
-            Ok(()) => {}
-            Err(msg) => {
-                println!("{} at [{}, {}]", msg, file!(), line!());
-                return;
-            }
-        }
-
-        // Start first ping check.
-        match user_udp_service.connect(&udp_socket) {
+        match user_udp_service.do_first_ping_check(&udp_socket) {
             Ok(ping_ms) => {
-                // ping to buf
-                let ping_buf = u16::encode::<u16>(&ping_ms);
-                if let Err(e) = ping_buf {
-                    println!(
-                        "u16::encode::<u16>() failed, error: {} at [{}, {}]",
-                        e,
-                        file!(),
-                        line!()
-                    );
+                if let Err(e) = user_udp_service.send_user_ping_to_all(ping_ms, &users) {
+                    println!("{} at [{}, {}]", e, file!(), line!());
                     return;
-                }
-                let mut ping_buf = ping_buf.unwrap();
-                ping_info_buf.append(&mut ping_buf);
-
-                // Send ping to all.
-                let mut users_guard = users.lock().unwrap();
-                for user in users_guard.iter_mut() {
-                    if user.username == username {
-                        user.last_ping = ping_ms;
-                    }
-                    if user.udp_socket.is_some() {
-                        match user_udp_service
-                            .send(user.udp_socket.as_ref().unwrap(), &ping_info_buf)
-                        {
-                            Ok(()) => {}
-                            Err(msg) => {
-                                println!("{} at [{}, {}]", msg, file!(), line!());
-                                return;
-                            }
-                        }
-                    }
                 }
             }
             Err(msg) => {
@@ -564,216 +519,216 @@ impl NetService {
             }
         }
 
-        // Ready.
-        let mut last_ping_check_time = Local::now();
-        let mut in_buf = vec![0u8; IN_UDP_BUFFER_SIZE];
-        loop {
-            match udp_socket.recv(&mut in_buf) {
-                Ok(_) => match FromPrimitive::from_u8(in_buf[0]) {
-                    Some(ClientMessageUdp::PingCheck) => {
-                        // Update user ping.
-                        let time_diff = Local::now() - last_ping_check_time;
-                        let user_ping_ms = time_diff.num_milliseconds() as u16;
-                        last_ping_check_time = Local::now();
+        // // Ready.
+        // let mut last_ping_check_time = Local::now();
+        // let mut in_buf = vec![0u8; IN_UDP_BUFFER_SIZE];
+        // loop {
+        //     match udp_socket.recv(&mut in_buf) {
+        //         Ok(_) => match FromPrimitive::from_u8(in_buf[0]) {
+        //             Some(ClientMessageUdp::PingCheck) => {
+        //                 // Update user ping.
+        //                 let time_diff = Local::now() - last_ping_check_time;
+        //                 let user_ping_ms = time_diff.num_milliseconds() as u16;
+        //                 last_ping_check_time = Local::now();
 
-                        // Prepare packet about user ping to all.
-                        let mut ping_info_buf = Vec::new();
-                        match user_udp_service.prepare_ping_info_buf(&username, &mut ping_info_buf)
-                        {
-                            Ok(()) => {}
-                            Err(msg) => {
-                                println!("{} at [{}, {}]", msg, file!(), line!());
-                                return;
-                            }
-                        }
+        //                 // Prepare packet about user ping to all.
+        //                 let mut ping_info_buf = Vec::new();
+        //                 match user_udp_service.prepare_ping_info_buf(&username, &mut ping_info_buf)
+        //                 {
+        //                     Ok(()) => {}
+        //                     Err(msg) => {
+        //                         println!("{} at [{}, {}]", msg, file!(), line!());
+        //                         return;
+        //                     }
+        //                 }
 
-                        // ping to buf
-                        let ping_buf = u16::encode::<u16>(&user_ping_ms);
-                        if let Err(e) = ping_buf {
-                            println!(
-                                "u16::encode::<u16>() failed, error: {} at [{}, {}]",
-                                e,
-                                file!(),
-                                line!()
-                            );
-                            return;
-                        }
-                        let mut ping_buf = ping_buf.unwrap();
-                        ping_info_buf.append(&mut ping_buf);
+        //                 // ping to buf
+        //                 let ping_buf = u16::encode::<u16>(&user_ping_ms);
+        //                 if let Err(e) = ping_buf {
+        //                     println!(
+        //                         "u16::encode::<u16>() failed, error: {} at [{}, {}]",
+        //                         e,
+        //                         file!(),
+        //                         line!()
+        //                     );
+        //                     return;
+        //                 }
+        //                 let mut ping_buf = ping_buf.unwrap();
+        //                 ping_info_buf.append(&mut ping_buf);
 
-                        let mut users_guard = users.lock().unwrap();
-                        for user in users_guard.iter_mut() {
-                            if user.username == username {
-                                user.last_ping = user_ping_ms;
-                            }
-                            if user.udp_socket.is_some() {
-                                match user_udp_service
-                                    .send(user.udp_socket.as_ref().unwrap(), &ping_info_buf)
-                                {
-                                    Ok(()) => {}
-                                    Err(msg) => {
-                                        println!("{} at [{}, {}]", msg, file!(), line!());
-                                        return;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    Some(ClientMessageUdp::VoicePacket) => {
-                        let mut read_index = 1usize;
+        //                 let mut users_guard = users.lock().unwrap();
+        //                 for user in users_guard.iter_mut() {
+        //                     if user.username == username {
+        //                         user.last_ping = user_ping_ms;
+        //                     }
+        //                     if user.udp_socket.is_some() {
+        //                         match user_udp_service
+        //                             .send(user.udp_socket.as_ref().unwrap(), &ping_info_buf)
+        //                         {
+        //                             Ok(()) => {}
+        //                             Err(msg) => {
+        //                                 println!("{} at [{}, {}]", msg, file!(), line!());
+        //                                 return;
+        //                             }
+        //                         }
+        //                     }
+        //                 }
+        //             }
+        //             Some(ClientMessageUdp::VoicePacket) => {
+        //                 let mut read_index = 1usize;
 
-                        // read voice data (encrypted) len
-                        let encrypted_voice_data_len_buf =
-                            &in_buf[1..1 + std::mem::size_of::<u16>()];
-                        read_index += std::mem::size_of::<u16>();
-                        let encrypted_voice_data_len =
-                            u16::decode::<u16>(encrypted_voice_data_len_buf);
-                        if let Err(e) = encrypted_voice_data_len {
-                            println!(
-                                "u16::decode::<u16>() failed, error: {} at [{}, {}]",
-                                e,
-                                file!(),
-                                line!()
-                            );
-                            return;
-                        }
-                        let encrypted_voice_data_len = encrypted_voice_data_len.unwrap();
+        //                 // read voice data (encrypted) len
+        //                 let encrypted_voice_data_len_buf =
+        //                     &in_buf[1..1 + std::mem::size_of::<u16>()];
+        //                 read_index += std::mem::size_of::<u16>();
+        //                 let encrypted_voice_data_len =
+        //                     u16::decode::<u16>(encrypted_voice_data_len_buf);
+        //                 if let Err(e) = encrypted_voice_data_len {
+        //                     println!(
+        //                         "u16::decode::<u16>() failed, error: {} at [{}, {}]",
+        //                         e,
+        //                         file!(),
+        //                         line!()
+        //                     );
+        //                     return;
+        //                 }
+        //                 let encrypted_voice_data_len = encrypted_voice_data_len.unwrap();
 
-                        // Read voice data (encrypted)
-                        let encrypted_voice_data =
-                            &in_buf[read_index..read_index + encrypted_voice_data_len as usize];
+        //                 // Read voice data (encrypted)
+        //                 let encrypted_voice_data =
+        //                     &in_buf[read_index..read_index + encrypted_voice_data_len as usize];
 
-                        // Decrypt user voice data.
-                        type Aes128Ecb = Ecb<Aes128, Pkcs7>;
-                        let cipher =
-                            Aes128Ecb::new_from_slices(&secret_key, Default::default()).unwrap();
-                        let decrypted_message = cipher.decrypt_vec(encrypted_voice_data);
-                        if let Err(e) = decrypted_message {
-                            println!(
-                                "cipher.decrypt_vec() failed, error: {} at [{}, {}]",
-                                e,
-                                file!(),
-                                line!()
-                            );
-                            return;
-                        }
-                        let user_voice_message = decrypted_message.unwrap();
+        //                 // Decrypt user voice data.
+        //                 type Aes128Ecb = Ecb<Aes128, Pkcs7>;
+        //                 let cipher =
+        //                     Aes128Ecb::new_from_slices(&secret_key, Default::default()).unwrap();
+        //                 let decrypted_message = cipher.decrypt_vec(encrypted_voice_data);
+        //                 if let Err(e) = decrypted_message {
+        //                     println!(
+        //                         "cipher.decrypt_vec() failed, error: {} at [{}, {}]",
+        //                         e,
+        //                         file!(),
+        //                         line!()
+        //                     );
+        //                     return;
+        //                 }
+        //                 let user_voice_message = decrypted_message.unwrap();
 
-                        // Prepare out packet:
-                        // (u8) - id (ServerMessageUdp::VoiceMessage)
-                        // (u8) - username len
-                        // (size) - username
-                        // (u16) - voice data len (encrypted)
-                        // (size) - voice data (encrypted)
-                        let packet_id = ServerMessageUdp::VoiceMessage.to_u8().unwrap();
-                        let mut username_buf = Vec::from(username.as_bytes());
-                        let username_len = username_buf.len() as u8;
+        //                 // Prepare out packet:
+        //                 // (u8) - id (ServerMessageUdp::VoiceMessage)
+        //                 // (u8) - username len
+        //                 // (size) - username
+        //                 // (u16) - voice data len (encrypted)
+        //                 // (size) - voice data (encrypted)
+        //                 let packet_id = ServerMessageUdp::VoiceMessage.to_u8().unwrap();
+        //                 let mut username_buf = Vec::from(username.as_bytes());
+        //                 let username_len = username_buf.len() as u8;
 
-                        let mut out_buf: Vec<u8> = Vec::new();
-                        out_buf.push(packet_id);
-                        out_buf.push(username_len);
-                        out_buf.append(&mut username_buf);
+        //                 let mut out_buf: Vec<u8> = Vec::new();
+        //                 out_buf.push(packet_id);
+        //                 out_buf.push(username_len);
+        //                 out_buf.append(&mut username_buf);
 
-                        let mut users_guard = users.lock().unwrap();
-                        let mut user_room = String::from(DEFAULT_ROOM_NAME);
-                        // get current user room
-                        for user in users_guard.iter() {
-                            if user.username == username {
-                                user_room = user.room_name.clone();
-                                break;
-                            }
-                        }
+        //                 let mut users_guard = users.lock().unwrap();
+        //                 let mut user_room = String::from(DEFAULT_ROOM_NAME);
+        //                 // get current user room
+        //                 for user in users_guard.iter() {
+        //                     if user.username == username {
+        //                         user_room = user.room_name.clone();
+        //                         break;
+        //                     }
+        //                 }
 
-                        // send voice message
-                        for user in users_guard.iter_mut() {
-                            if user.username != username
-                                && user.udp_socket.is_some()
-                                && user.room_name == user_room
-                            {
-                                let mut copy_buf = out_buf.clone();
+        //                 // send voice message
+        //                 for user in users_guard.iter_mut() {
+        //                     if user.username != username
+        //                         && user.udp_socket.is_some()
+        //                         && user.room_name == user_room
+        //                     {
+        //                         let mut copy_buf = out_buf.clone();
 
-                                // Encrypt with user key.
-                                let cipher = Aes128Ecb::new_from_slices(
-                                    &user.secret_key,
-                                    Default::default(),
-                                )
-                                .unwrap();
-                                let mut encrypted_voice_message =
-                                    cipher.encrypt_vec(&user_voice_message);
+        //                         // Encrypt with user key.
+        //                         let cipher = Aes128Ecb::new_from_slices(
+        //                             &user.secret_key,
+        //                             Default::default(),
+        //                         )
+        //                         .unwrap();
+        //                         let mut encrypted_voice_message =
+        //                             cipher.encrypt_vec(&user_voice_message);
 
-                                // Prepare message len buffer.
-                                let encrypted_message_len = encrypted_voice_message.len() as u16;
-                                let encrypted_message_len_buf =
-                                    u16::encode::<u16>(&encrypted_message_len);
-                                if let Err(e) = encrypted_message_len_buf {
-                                    println!(
-                                        "u16::encode::<u16>() failed, error: {} at [{}, {}]",
-                                        e,
-                                        file!(),
-                                        line!()
-                                    );
-                                    return;
-                                }
-                                let mut encrypted_message_len_buf =
-                                    encrypted_message_len_buf.unwrap();
+        //                         // Prepare message len buffer.
+        //                         let encrypted_message_len = encrypted_voice_message.len() as u16;
+        //                         let encrypted_message_len_buf =
+        //                             u16::encode::<u16>(&encrypted_message_len);
+        //                         if let Err(e) = encrypted_message_len_buf {
+        //                             println!(
+        //                                 "u16::encode::<u16>() failed, error: {} at [{}, {}]",
+        //                                 e,
+        //                                 file!(),
+        //                                 line!()
+        //                             );
+        //                             return;
+        //                         }
+        //                         let mut encrypted_message_len_buf =
+        //                             encrypted_message_len_buf.unwrap();
 
-                                copy_buf.append(&mut encrypted_message_len_buf);
-                                copy_buf.append(&mut encrypted_voice_message);
+        //                         copy_buf.append(&mut encrypted_message_len_buf);
+        //                         copy_buf.append(&mut encrypted_voice_message);
 
-                                match user_udp_service
-                                    .send(user.udp_socket.as_ref().unwrap(), &copy_buf)
-                                {
-                                    Ok(()) => {}
-                                    Err(msg) => {
-                                        println!("{} at [{}, {}]", msg, file!(), line!());
-                                        return;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    None => {
-                        println!(
-                            "FromPrimitive::from_u8() failed with value {}, at [{}, {}]",
-                            in_buf[0],
-                            file!(),
-                            line!()
-                        );
-                        return;
-                    }
-                },
-                Err(ref e) if e.kind() == ErrorKind::WouldBlock => {
-                    {
-                        if tcp_listen.lock().unwrap().try_recv().is_ok() {
-                            // tcp thread ended, finish this thread
-                            return;
-                        }
-                    }
+        //                         match user_udp_service
+        //                             .send(user.udp_socket.as_ref().unwrap(), &copy_buf)
+        //                         {
+        //                             Ok(()) => {}
+        //                             Err(msg) => {
+        //                                 println!("{} at [{}, {}]", msg, file!(), line!());
+        //                                 return;
+        //                             }
+        //                         }
+        //                     }
+        //                 }
+        //             }
+        //             None => {
+        //                 println!(
+        //                     "FromPrimitive::from_u8() failed with value {}, at [{}, {}]",
+        //                     in_buf[0],
+        //                     file!(),
+        //                     line!()
+        //                 );
+        //                 return;
+        //             }
+        //         },
+        //         Err(ref e) if e.kind() == ErrorKind::WouldBlock => {
+        //             {
+        //                 if tcp_listen.lock().unwrap().try_recv().is_ok() {
+        //                     // tcp thread ended, finish this thread
+        //                     return;
+        //                 }
+        //             }
 
-                    let time_diff = Local::now() - last_ping_check_time;
-                    if time_diff.num_seconds() > INTERVAL_PING_CHECK_SEC {
-                        match user_udp_service.send_ping_check(&udp_socket) {
-                            Ok(()) => last_ping_check_time = Local::now(),
-                            Err(msg) => {
-                                println!("{}, at [{}, {}]", msg, file!(), line!());
-                                return;
-                            }
-                        }
-                    }
+        //             let time_diff = Local::now() - last_ping_check_time;
+        //             if time_diff.num_seconds() > INTERVAL_PING_CHECK_SEC {
+        //                 match user_udp_service.send_ping_check(&udp_socket) {
+        //                     Ok(()) => last_ping_check_time = Local::now(),
+        //                     Err(msg) => {
+        //                         println!("{}, at [{}, {}]", msg, file!(), line!());
+        //                         return;
+        //                     }
+        //                 }
+        //             }
 
-                    thread::sleep(Duration::from_millis(INTERVAL_UDP_IDLE_MS));
-                    continue;
-                }
-                Err(e) => {
-                    println!(
-                        "udp_socket.recv() failed, error: {}, at [{}, {}]",
-                        e,
-                        file!(),
-                        line!()
-                    );
-                    return;
-                }
-            }
-        }
+        //             thread::sleep(Duration::from_millis(INTERVAL_UDP_IDLE_MS));
+        //             continue;
+        //         }
+        //         Err(e) => {
+        //             println!(
+        //                 "udp_socket.recv() failed, error: {}, at [{}, {}]",
+        //                 e,
+        //                 file!(),
+        //                 line!()
+        //             );
+        //             return;
+        //         }
+        //     }
+        // }
     }
 }
