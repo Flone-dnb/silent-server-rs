@@ -2,12 +2,10 @@
 use aes::Aes128;
 use block_modes::block_padding::Pkcs7;
 use block_modes::{BlockMode, Ecb};
-use bytevec::ByteEncodable;
 use chrono::prelude::*;
 use num_bigint::{BigUint, RandomBits};
 use num_derive::FromPrimitive;
 use num_derive::ToPrimitive;
-use num_traits::cast::ToPrimitive;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 
@@ -631,6 +629,7 @@ impl UserTcpService {
                         banned_addrs_guard.as_mut().unwrap().push(BannedAddress {
                             banned_at: Local::now(),
                             addr: user_info.tcp_addr.ip(),
+                            reason: BanReason::WrongPassword,
                         });
                     }
                 }

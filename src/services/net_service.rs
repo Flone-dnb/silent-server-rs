@@ -59,9 +59,15 @@ impl UserInfo {
     }
 }
 
+pub enum BanReason {
+    WrongPassword,
+    Spam,
+}
+
 pub struct BannedAddress {
     pub banned_at: DateTime<Local>,
     pub addr: IpAddr,
+    pub reason: BanReason,
 }
 
 pub struct NetService {
@@ -177,7 +183,7 @@ impl NetService {
             {
                 let mut banned_addrs_guard = banned_addrs.lock().unwrap();
 
-                // leave only banned in the vec
+                // keep only banned in the vec
                 // use 'Option' to move out of mutex
                 *banned_addrs_guard = Some(
                     banned_addrs_guard
