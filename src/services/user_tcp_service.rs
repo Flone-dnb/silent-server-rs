@@ -885,6 +885,15 @@ impl UserTcpService {
 
         user_info.last_text_message_sent = Local::now();
 
+        // use '.len' instead of '.chars().count()'
+        // because we only care about byte length.
+        if message.len() > MAX_MESSAGE_SIZE {
+            return HandleStateResult::HandleStateErr(format!(
+                "the user \"{}\" is sending text message that is too big ({}/{}) (which should not happen with the default (unchanged) client version).",
+                user_info.username, message.len(), MAX_MESSAGE_SIZE
+            ));
+        }
+
         // Serialize packet.
         let packet = ServerTcpMessage::UserMessage {
             username: user_info.username.clone(),
