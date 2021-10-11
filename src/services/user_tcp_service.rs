@@ -1074,66 +1074,54 @@ impl UserTcpService {
         user_info: &mut UserInfo,
         users: Arc<Mutex<LinkedList<UserInfo>>>,
     ) -> HandleStateResult {
-        // Tell others about disconnected user.
-        // Data:
-        // (u16): data ID = user disconnected.
-        // (u16): username len.
-        // (size): username.
-        let mut user_disconnected_info_out_buf: Vec<u8> = Vec::new();
+        // Serialize packet.
+        let packet = ServerTcpMessage::UserDisconnected {
+            username: user_info.username.clone(),
+        };
 
-        // Create data_id buffer.
-        let data_id = ServerMessageTcp::UserDisconnected.to_u16();
-        if data_id.is_none() {
+        let binary_packet = bincode::serialize(&packet);
+        if let Err(e) = binary_packet {
             return HandleStateResult::HandleStateErr(format!(
-                "ToPrimitive::to_u16() failed, error: socket ({}) at [{}, {}]",
-                user_info.tcp_addr,
+                "bincode::serialize failed, error: {}, at [{}, {}].",
+                e,
                 file!(),
                 line!()
             ));
         }
-        let data_id: u16 = data_id.unwrap();
-        let data_id_buf = u16::encode::<u16>(&data_id);
-        if let Err(e) = data_id_buf {
-            return HandleStateResult::HandleStateErr(format!(
-                "u16::encode::<u16> failed, error: socket ({}) failed on 'data_id' (error: {}) at [{}, {}]",
-                user_info.tcp_addr, e, file!(), line!()
-            ));
-        }
-        let mut data_id_buf = data_id_buf.unwrap();
+        let binary_packet = binary_packet.unwrap();
 
-        // Create username len buffer.
-        let username_len = user_info.username.len() as u16;
-        let username_len_buf = u16::encode::<u16>(&username_len);
-        if let Err(e) = username_len_buf {
-            return HandleStateResult::HandleStateErr(format!(
-                "u16::encode::<u16> failed, error: socket ({}) failed on 'username_len' (error: {}) at [{}, {}]",
-                user_info.tcp_addr, e, file!(), line!()
-            ));
-        }
-        let mut username_len_buf = username_len_buf.unwrap();
-
-        // Create username buffer.
-        let mut username_buf: Vec<u8> = Vec::from(user_info.username.as_bytes());
-
-        user_disconnected_info_out_buf.append(&mut data_id_buf);
-        user_disconnected_info_out_buf.append(&mut username_len_buf);
-        user_disconnected_info_out_buf.append(&mut username_buf);
-
-        // Send info about new user.
+        // Send to all.
         {
             let mut users_guard = users.lock().unwrap();
             for user in users_guard.iter_mut() {
-                loop {
-                    match self.write_to_socket(user, &mut user_disconnected_info_out_buf) {
-                        IoResult::WouldBlock => {
-                            thread::sleep(Duration::from_millis(INTERVAL_TCP_MESSAGE_MS));
-                            continue;
-                        }
-                        IoResult::Ok(_) => {
-                            break;
-                        }
-                        res => return HandleStateResult::IoErr(res),
+                // Encrypt with user key.
+                type Aes128Ecb = Ecb<Aes128, Pkcs7>;
+                let cipher =
+                    Aes128Ecb::new_from_slices(&user.secret_key, Default::default()).unwrap();
+                let mut encrypted_packet = cipher.encrypt_vec(&binary_packet);
+
+                // Prepare message len buffer.
+                let encrypted_len = encrypted_packet.len() as u16;
+                let encrypted_len_buf = bincode::serialize(&encrypted_len);
+                if let Err(e) = encrypted_len_buf {
+                    return HandleStateResult::HandleStateErr(format!(
+                        "bincode::serialize failed, error: {} at [{}, {}].",
+                        e,
+                        file!(),
+                        line!()
+                    ));
+                }
+                let mut encrypted_len_buf = encrypted_len_buf.unwrap();
+
+                encrypted_len_buf.append(&mut encrypted_packet);
+
+                match self.write_to_socket(user, &mut encrypted_len_buf) {
+                    IoResult::WouldBlock => {
+                        thread::sleep(Duration::from_millis(INTERVAL_TCP_MESSAGE_MS));
+                        continue;
                     }
+                    IoResult::Ok(_) => {}
+                    res => return HandleStateResult::IoErr(res),
                 }
             }
         }
