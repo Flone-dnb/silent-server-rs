@@ -1055,10 +1055,10 @@ impl UserTcpService {
             ));
         }
         let room_name_len = room_name_len.unwrap();
-        if room_name_len as usize > MAX_MESSAGE_SIZE {
+        if room_name_len as usize > MAX_USERNAME_SIZE {
             return HandleStateResult::HandleStateErr(format!(
                 "An error occurred, error: socket ({}) on state (Connected) failed because the received room name len is too big ({}) while the maximum is {}, at [{}, {}]",
-                user_info.tcp_addr, room_name_len, MAX_MESSAGE_SIZE, file!(), line!()
+                user_info.tcp_addr, room_name_len, MAX_USERNAME_SIZE, file!(), line!()
             ));
         }
 
