@@ -5,7 +5,6 @@ use block_modes::{BlockMode, Ecb};
 use chrono::prelude::*;
 use num_derive::FromPrimitive;
 use num_derive::ToPrimitive;
-use num_traits::cast::ToPrimitive;
 
 // Std.
 use std::collections::LinkedList;
@@ -37,6 +36,7 @@ pub enum ClientMessageUdp {
 pub struct UserUdpService {
     secret_key: Vec<u8>,
     username: String,
+    last_ping_check_started_at: DateTime<Local>, // for send_ping_check()
 }
 
 impl UserUdpService {
@@ -44,6 +44,7 @@ impl UserUdpService {
         UserUdpService {
             secret_key,
             username,
+            last_ping_check_started_at: Local::now(),
         }
     }
     pub fn do_first_ping_check(&self, udp_socket: &UdpSocket) -> Result<u16, String> {
@@ -221,19 +222,124 @@ impl UserUdpService {
 
         Ok(())
     }
-    pub fn send_ping_check(&self, udp_socket: &UdpSocket) -> Result<(), String> {
-        let mut buf = vec![0u8; 1];
-        let data_id = ServerMessageUdp::PingCheck.to_u8();
-        if data_id.is_none() {
+    pub fn handle_next_packet(
+        &self,
+        udp_socket: &UdpSocket,
+        next_packet_size: u16,
+        users: &Arc<Mutex<LinkedList<UserInfo>>>,
+    ) -> Result<(), String> {
+        if next_packet_size + std::mem::size_of::<u16>() as u16 > UDP_PACKET_MAX_SIZE {
             return Err(format!(
-                "ServerMessageUdp::PingCheck.to_u8() failed, at [{}, {}]",
+                "received packet length is too big ({}/{}), at [{}, {}]",
+                next_packet_size,
+                UDP_PACKET_MAX_SIZE,
                 file!(),
                 line!()
             ));
         }
-        buf[0] = data_id.unwrap();
 
-        match self.send(udp_socket, &buf) {
+        let mut recv_buffer = vec![0u8; UDP_PACKET_MAX_SIZE as usize];
+        match self.recv(udp_socket, &mut recv_buffer) {
+            Ok(byte_count) => {
+                // Deserialize packet length.
+                let packet_len =
+                    bincode::deserialize::<u16>(&recv_buffer[..std::mem::size_of::<u16>()]);
+                if let Err(e) = packet_len {
+                    return Err(format!("{}, at [{}, {}]", e, file!(), line!()));
+                }
+                let packet_len = packet_len.unwrap();
+
+                // Check size.
+                if packet_len > UDP_PACKET_MAX_SIZE {
+                    return Err(format!(
+                        "received packet length is too big ({}/{}), at [{}, {}]",
+                        packet_len,
+                        UDP_PACKET_MAX_SIZE,
+                        file!(),
+                        line!()
+                    ));
+                }
+
+                // Exclude size of the packet and trailing zeros.
+                recv_buffer = recv_buffer[std::mem::size_of::<u16>()..byte_count].to_vec();
+            }
+            Err(msg) => {
+                return Err(format!("{}, at [{}, {}]", msg, file!(), line!()));
+            }
+        }
+
+        // Decrypt.
+        type Aes128Ecb = Ecb<Aes128, Pkcs7>;
+        let cipher = Aes128Ecb::new_from_slices(&self.secret_key, Default::default()).unwrap();
+        let decrypted_packet = cipher.decrypt_vec(&recv_buffer);
+        if let Err(e) = decrypted_packet {
+            return Err(format!("{:?}, at [{}, {}]", e, file!(), line!()));
+        }
+        let decrypted_packet = decrypted_packet.unwrap();
+
+        // Deserialize.
+        let packet_buf = bincode::deserialize::<ClientUdpMessage>(&decrypted_packet);
+        if let Err(e) = packet_buf {
+            return Err(format!("{:?}, at [{}, {}]", e, file!(), line!()));
+        }
+        let packet_buf = packet_buf.unwrap();
+
+        match packet_buf {
+            ClientUdpMessage::PingCheck => {
+                let ping_time = Local::now() - self.last_ping_check_started_at;
+                let ping_ms = ping_time.num_milliseconds() as u16;
+                println!("user: {}, ping: {} ms", self.username, ping_ms);
+                return self.send_user_ping_to_all(ping_ms, users);
+            }
+            ClientUdpMessage::Connect { username: _ } => {
+                return Err(format!(
+                    "unexpected packet type, at [{}, {}]",
+                    file!(),
+                    line!()
+                ));
+            }
+        }
+    }
+    pub fn send_ping_check(&mut self, udp_socket: &UdpSocket) -> Result<(), String> {
+        // Serialize packet.
+        let packet = ServerUdpMessage::PingCheck {};
+
+        let binary_packet = bincode::serialize(&packet);
+        if let Err(e) = binary_packet {
+            return Err(format!(
+                "bincode::serialize failed, error: {:?}, at [{}, {}].",
+                e,
+                file!(),
+                line!()
+            ));
+        }
+        let binary_packet = binary_packet.unwrap();
+
+        // Encrypt with user key.
+        type Aes128Ecb = Ecb<Aes128, Pkcs7>;
+        let cipher = Aes128Ecb::new_from_slices(&self.secret_key, Default::default()).unwrap();
+        let mut encrypted_packet = cipher.encrypt_vec(&binary_packet);
+
+        // Prepare len buffer.
+        let encrypted_len = encrypted_packet.len() as u16;
+        let encrypted_len_buf = bincode::serialize(&encrypted_len);
+        if let Err(e) = encrypted_len_buf {
+            return Err(format!(
+                "bincode::serialize failed, error: {:?} at [{}, {}].",
+                e,
+                file!(),
+                line!()
+            ));
+        }
+        let mut encrypted_len_buf = encrypted_len_buf.unwrap();
+
+        encrypted_len_buf.append(&mut encrypted_packet);
+
+        // Start timer.
+        self.last_ping_check_started_at = Local::now();
+
+        // Send.
+        match self.send(udp_socket, &encrypted_len_buf) {
             Ok(()) => Ok(()),
             Err(msg) => Err(format!("{}, at [{}, {}]", msg, file!(), line!())),
         }
@@ -395,7 +501,6 @@ impl UserUdpService {
                         let mut users_guard = users.lock().unwrap();
                         for user in users_guard.iter_mut() {
                             if user.username == self.username {
-                                println!("OK");
                                 user.udp_socket = Some(socket_clone);
                                 break;
                             }
@@ -459,6 +564,31 @@ impl UserUdpService {
                         file!(),
                         line!()
                     ));
+                }
+            }
+        }
+    }
+    // returns None if WouldBlock
+    pub fn peek_no_blocking(
+        &self,
+        udp_socket: &UdpSocket,
+        buf: &mut [u8],
+    ) -> Option<Result<(usize, SocketAddr), String>> {
+        loop {
+            match udp_socket.peek_from(buf) {
+                Ok((n, addr)) => {
+                    return Some(Ok((n, addr)));
+                }
+                Err(ref e) if e.kind() == ErrorKind::WouldBlock => {
+                    return None;
+                }
+                Err(e) => {
+                    return Some(Err(format!(
+                        "udp_socket.peek_from() failed, error: {}, at [{}, {}]",
+                        e,
+                        file!(),
+                        line!()
+                    )));
                 }
             }
         }
