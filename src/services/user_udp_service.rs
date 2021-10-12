@@ -288,7 +288,6 @@ impl UserUdpService {
             ClientUdpMessage::PingCheck => {
                 let ping_time = Local::now() - self.last_ping_check_started_at;
                 let ping_ms = ping_time.num_milliseconds() as u16;
-                println!("user: {}, ping: {} ms", self.username, ping_ms);
                 return self.send_user_ping_to_all(ping_ms, users);
             }
             ClientUdpMessage::Connect { username: _ } => {
