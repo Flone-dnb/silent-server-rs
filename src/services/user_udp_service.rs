@@ -3,8 +3,6 @@ use aes::Aes128;
 use block_modes::block_padding::Pkcs7;
 use block_modes::{BlockMode, Ecb};
 use chrono::prelude::*;
-use num_derive::FromPrimitive;
-use num_derive::ToPrimitive;
 
 // Std.
 use std::collections::LinkedList;
@@ -18,19 +16,6 @@ use std::time::Duration;
 use super::net_service::UserInfo;
 use super::udp_packets::*;
 use crate::global_params::*;
-
-#[derive(FromPrimitive, ToPrimitive, PartialEq)]
-pub enum ServerMessageUdp {
-    UserPing = 0,
-    PingCheck = 1,
-    VoiceMessage = 2,
-}
-
-#[derive(FromPrimitive, ToPrimitive, PartialEq)]
-pub enum ClientMessageUdp {
-    VoicePacket = 0,
-    PingCheck = 1,
-}
 
 #[derive(Debug)]
 pub struct UserUdpService {
@@ -222,6 +207,68 @@ impl UserUdpService {
 
         Ok(())
     }
+    pub fn send_voice_message_to_all(
+        &self,
+        sender_name: String,
+        samples: Vec<i16>,
+        users: &Arc<Mutex<LinkedList<UserInfo>>>,
+    ) -> Result<(), String> {
+        // Serialize packet.
+        let packet = ServerUdpMessage::VoiceMessage {
+            username: sender_name,
+            samples,
+        };
+
+        let binary_packet = bincode::serialize(&packet);
+        if let Err(e) = binary_packet {
+            return Err(format!(
+                "bincode::serialize failed, error: {:?}, at [{}, {}].",
+                e,
+                file!(),
+                line!()
+            ));
+        }
+        let binary_packet = binary_packet.unwrap();
+
+        // Send message to all.
+        let mut users_guard = users.lock().unwrap();
+        for user in users_guard.iter_mut() {
+            if user.username == self.username {
+                continue; // don't send voice message to self
+            }
+            if user.udp_socket.is_some() {
+                // Encrypt with user key.
+                type Aes128Ecb = Ecb<Aes128, Pkcs7>;
+                let cipher =
+                    Aes128Ecb::new_from_slices(&user.secret_key, Default::default()).unwrap();
+                let mut encrypted_packet = cipher.encrypt_vec(&binary_packet);
+
+                // Prepare len buffer.
+                let encrypted_len = encrypted_packet.len() as u16;
+                let encrypted_len_buf = bincode::serialize(&encrypted_len);
+                if let Err(e) = encrypted_len_buf {
+                    return Err(format!(
+                        "bincode::serialize failed, error: {:?} at [{}, {}].",
+                        e,
+                        file!(),
+                        line!()
+                    ));
+                }
+                let mut encrypted_len_buf = encrypted_len_buf.unwrap();
+
+                encrypted_len_buf.append(&mut encrypted_packet);
+
+                match self.send(user.udp_socket.as_ref().unwrap(), &encrypted_len_buf) {
+                    Ok(()) => {}
+                    Err(msg) => {
+                        return Err(format!("{} at [{}, {}]", msg, file!(), line!()));
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
     pub fn handle_next_packet(
         &self,
         udp_socket: &UdpSocket,
@@ -296,6 +343,9 @@ impl UserUdpService {
                     file!(),
                     line!()
                 ));
+            }
+            ClientUdpMessage::VoiceMessage { samples } => {
+                return self.send_voice_message_to_all(self.username.clone(), samples, users);
             }
         }
     }

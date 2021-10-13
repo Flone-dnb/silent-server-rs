@@ -1,15 +1,9 @@
 // External.
-use aes::Aes128;
-use block_modes::block_padding::Pkcs7;
-use block_modes::{BlockMode, Ecb};
-use bytevec::{ByteDecodable, ByteEncodable};
 use chrono::prelude::*;
-use num_traits::{cast::ToPrimitive, FromPrimitive};
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 
 // Std.
 use std::collections::LinkedList;
-use std::io::ErrorKind;
 use std::net::*;
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
