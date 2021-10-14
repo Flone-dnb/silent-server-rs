@@ -597,10 +597,41 @@ impl UserUdpService {
         udp_socket: &UdpSocket,
         buf: &mut [u8],
     ) -> Result<(usize, SocketAddr), String> {
+        #[cfg(target_os = "linux")]
         loop {
             match udp_socket.peek_from(buf) {
                 Ok((n, addr)) => {
                     return Ok((n, addr));
+                }
+                Err(ref e) if e.kind() == ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(INTERVAL_UDP_MESSAGE_MS));
+                    continue;
+                }
+                Err(e) => {
+                    return Err(format!(
+                        "udp_socket.peek_from() failed, error: {}, at [{}, {}]",
+                        e,
+                        file!(),
+                        line!()
+                    ));
+                }
+            }
+        }
+        #[cfg(target_os = "windows")]
+        // windows returns error 10040 - WSAEMSGSIZE (https://docs.microsoft.com/en-us/troubleshoot/windows-server/networking/wsaemsgsize-error-10040-in-winsock-2)
+        // if the 'buf' is smaller than incoming packet
+        let mut bigger_buf = vec![0u8; UDP_PACKET_MAX_SIZE as usize];
+        loop {
+            match udp_socket.peek_from(&mut bigger_buf) {
+                Ok((n, addr)) => {
+                    for i in 0..n {
+                        if i < buf.len() {
+                            buf[i] = bigger_buf[i];
+                        } else {
+                            break;
+                        }
+                    }
+                    return Ok((buf.len(), addr));
                 }
                 Err(ref e) if e.kind() == ErrorKind::WouldBlock => {
                     thread::sleep(Duration::from_millis(INTERVAL_UDP_MESSAGE_MS));
@@ -623,10 +654,40 @@ impl UserUdpService {
         udp_socket: &UdpSocket,
         buf: &mut [u8],
     ) -> Option<Result<(usize, SocketAddr), String>> {
+        #[cfg(target_os = "linux")]
         loop {
             match udp_socket.peek_from(buf) {
                 Ok((n, addr)) => {
                     return Some(Ok((n, addr)));
+                }
+                Err(ref e) if e.kind() == ErrorKind::WouldBlock => {
+                    return None;
+                }
+                Err(e) => {
+                    return Some(Err(format!(
+                        "udp_socket.peek_from() failed, error: {}, at [{}, {}]",
+                        e,
+                        file!(),
+                        line!()
+                    )));
+                }
+            }
+        }
+        #[cfg(target_os = "windows")]
+        // windows returns error 10040 - WSAEMSGSIZE (https://docs.microsoft.com/en-us/troubleshoot/windows-server/networking/wsaemsgsize-error-10040-in-winsock-2)
+        // if the 'buf' is smaller than incoming packet
+        let mut bigger_buf = vec![0u8; UDP_PACKET_MAX_SIZE as usize];
+        loop {
+            match udp_socket.peek_from(&mut bigger_buf) {
+                Ok((n, addr)) => {
+                    for i in 0..n {
+                        if i < buf.len() {
+                            buf[i] = bigger_buf[i];
+                        } else {
+                            break;
+                        }
+                    }
+                    return Some(Ok((buf.len(), addr)));
                 }
                 Err(ref e) if e.kind() == ErrorKind::WouldBlock => {
                     return None;
