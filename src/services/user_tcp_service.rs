@@ -4,10 +4,7 @@ use block_modes::block_padding::Pkcs7;
 use block_modes::{BlockMode, Ecb};
 use chrono::prelude::*;
 use num_bigint::{BigUint, RandomBits};
-use num_derive::FromPrimitive;
-use num_derive::ToPrimitive;
 use rand::Rng;
-use serde::{Deserialize, Serialize};
 
 // Std.
 use std::collections::LinkedList;
@@ -29,31 +26,6 @@ const A_B_BITS: u64 = 2048;
 pub enum UserState {
     NotConnected,
     Connected,
-}
-
-#[derive(FromPrimitive, ToPrimitive, PartialEq, Clone, Copy, Serialize, Deserialize)]
-pub enum ConnectServerAnswer {
-    Ok = 0,
-    WrongProtocol = 1,
-    UsernameTaken = 2,
-    WrongPassword = 3,
-    ServerIsFull = 4,
-}
-
-#[derive(FromPrimitive, ToPrimitive, PartialEq, Serialize, Deserialize)]
-pub enum ServerMessageTcp {
-    UserConnected = 0,
-    UserDisconnected = 1,
-    UserMessage = 2,
-    UserEntersRoom = 3,
-    KeepAliveCheck = 4,
-}
-
-#[derive(FromPrimitive, ToPrimitive, PartialEq)]
-pub enum ClientMessage {
-    UserMessage = 0,
-    EnterRoom = 1,
-    KeepAliveCheck = 2,
 }
 
 pub enum IoResult {

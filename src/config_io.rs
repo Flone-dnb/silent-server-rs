@@ -1,5 +1,4 @@
 // External.
-use bytevec::{ByteDecodable, ByteEncodable};
 use chrono::prelude::*;
 #[cfg(target_os = "windows")]
 use platform_dirs::UserDirs;
@@ -256,7 +255,7 @@ impl ServerConfig {
                 line!()
             ));
         }
-        let magic_number = u16::decode::<u16>(&buf).unwrap();
+        let magic_number = bincode::deserialize::<u16>(&buf).unwrap();
         if magic_number != CONFIG_FILE_MAGIC_NUMBER {
             return Err(format!(
                 "An error occurred: file magic number ({}) != config magic number ({}) at [{}, {}]",
@@ -278,7 +277,7 @@ impl ServerConfig {
             ));
         }
         // use it to handle old config versions...
-        let config_version = u64::decode::<u64>(&buf).unwrap();
+        let config_version = bincode::deserialize::<u64>(&buf).unwrap();
 
         // Read server port.
         let mut buf = vec![0u8; std::mem::size_of::<u16>()];
@@ -290,7 +289,7 @@ impl ServerConfig {
                 line!()
             ));
         }
-        self.server_port = u16::decode::<u16>(&buf).unwrap();
+        self.server_port = bincode::deserialize::<u16>(&buf).unwrap();
 
         // Read server password size.
         let mut buf = vec![0u8; std::mem::size_of::<u32>()];
@@ -303,7 +302,7 @@ impl ServerConfig {
                 line!()
             ));
         }
-        _password_byte_count = u32::decode::<u32>(&buf).unwrap();
+        _password_byte_count = bincode::deserialize::<u32>(&buf).unwrap();
 
         // Read server password.
         let mut buf = vec![0u8; _password_byte_count as usize];
@@ -335,7 +334,7 @@ impl ServerConfig {
                 line!()
             ));
         }
-        _room_count = u16::decode::<u16>(&buf).unwrap();
+        _room_count = bincode::deserialize::<u16>(&buf).unwrap();
 
         self.rooms.clear();
 
@@ -351,7 +350,7 @@ impl ServerConfig {
                     line!()
                 ));
             }
-            _room_name_len = u8::decode::<u8>(&buf).unwrap();
+            _room_name_len = bincode::deserialize::<u8>(&buf).unwrap();
 
             // Read room name.
             let mut buf = vec![0u8; _room_name_len as usize];
@@ -414,7 +413,7 @@ impl ServerConfig {
 
         // Write magic number.
         let magic_number = CONFIG_FILE_MAGIC_NUMBER;
-        if let Err(e) = config_file.write(&magic_number.encode::<u16>().unwrap()) {
+        if let Err(e) = config_file.write(&bincode::serialize(&magic_number).unwrap()) {
             return Err(
                 format!("File::write() failed, error: can't write to new config file (error: {}) at [{}, {}]",
             e,
@@ -425,7 +424,7 @@ impl ServerConfig {
 
         // Write config file version.
         let config_version = CONFIG_FILE_VERSION;
-        if let Err(e) = config_file.write(&config_version.encode::<u64>().unwrap()) {
+        if let Err(e) = config_file.write(&bincode::serialize(&config_version).unwrap()) {
             return Err(format!("File::write() failed, error: can't write to new config file (error: {}) at [{}, {}]",
             e,
             file!(),
@@ -433,7 +432,7 @@ impl ServerConfig {
         }
 
         // Write server port.
-        if let Err(e) = config_file.write(&self.server_port.encode::<u16>().unwrap()) {
+        if let Err(e) = config_file.write(&bincode::serialize(&self.server_port).unwrap()) {
             return Err(format!("File::write() failed, error: can't write to new config file (error: {}) at [{}, {}]",
             e,
             file!(),
@@ -442,7 +441,7 @@ impl ServerConfig {
 
         // Write server password size.
         let pass_size: u32 = self.server_password.len() as u32;
-        if let Err(e) = config_file.write(&pass_size.encode::<u32>().unwrap()) {
+        if let Err(e) = config_file.write(&bincode::serialize(&pass_size).unwrap()) {
             return Err(format!("File::write() failed, error: can't write to new config file (error: {}) at [{}, {}]",
             e,
             file!(),
@@ -461,7 +460,7 @@ impl ServerConfig {
 
         // Write room count.
         let room_count = self.rooms.len() as u16;
-        if let Err(e) = config_file.write(&room_count.encode::<u16>().unwrap()) {
+        if let Err(e) = config_file.write(&bincode::serialize(&room_count).unwrap()) {
             return Err(format!("File::write() failed, error: can't write to new config file (error: {}) at [{}, {}]",
             e,
             file!(),
@@ -472,7 +471,7 @@ impl ServerConfig {
         for room in self.rooms.iter() {
             // Write room name len.
             let room_name_len = room.room_name.len() as u8;
-            if let Err(e) = config_file.write(&room_name_len.encode::<u8>().unwrap()) {
+            if let Err(e) = config_file.write(&bincode::serialize(&room_name_len).unwrap()) {
                 return Err(format!("File::write() failed, error: can't write to new config file (error: {}) at [{}, {}]",
                 e,
                 file!(),

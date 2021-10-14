@@ -2,7 +2,14 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::user_tcp_service::ConnectServerAnswer;
+#[derive(PartialEq, Clone, Copy, Serialize, Deserialize)]
+pub enum ConnectServerAnswer {
+    Ok,
+    WrongProtocol,
+    UsernameTaken,
+    WrongPassword,
+    ServerIsFull,
+}
 
 // there's no such thing as a packet in TCP (it's all just a stream)
 // but the only thing that we receive unencrypted is the data size
