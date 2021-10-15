@@ -123,15 +123,15 @@ impl UserUdpService {
         }
         let decrypted_packet = decrypted_packet.unwrap();
 
-        // Deserialize to ServerUdpMessage because the client just resends our data (our ServerUdpMessage).
-        let packet_buf = bincode::deserialize::<ServerUdpMessage>(&decrypted_packet);
+        // Deserialize
+        let packet_buf = bincode::deserialize::<ClientUdpMessage>(&decrypted_packet);
         if let Err(e) = packet_buf {
             return Err(format!("{:?}, at [{}, {}]", e, file!(), line!()));
         }
         let packet_buf = packet_buf.unwrap();
 
         match packet_buf {
-            ServerUdpMessage::PingCheck => {}
+            ClientUdpMessage::PingCheck => {}
             _ => {
                 return Err(format!(
                     "unexpected packet type, at [{}, {}]",
