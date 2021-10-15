@@ -1,10 +1,12 @@
 // External.
-use aes::Aes128;
+use aes::Aes256;
 use block_modes::block_padding::Pkcs7;
-use block_modes::{BlockMode, Ecb};
+use block_modes::{BlockMode, Cbc};
 use chrono::prelude::*;
 use num_bigint::{BigUint, RandomBits};
-use rand::Rng;
+use rand::{Rng, RngCore};
+
+type Aes256Cbc = Cbc<Aes256, Pkcs7>;
 
 // Std.
 use std::collections::LinkedList;
@@ -85,13 +87,14 @@ impl UserTcpService {
                 let binary_packet = binary_packet.unwrap();
 
                 // Encrypt with user key.
-                type Aes128Ecb = Ecb<Aes128, Pkcs7>;
-                let cipher =
-                    Aes128Ecb::new_from_slices(&user_info.secret_key, Default::default()).unwrap();
+                let mut rng = rand::thread_rng();
+                let mut iv = vec![0u8; IV_LENGTH];
+                rng.fill_bytes(&mut iv);
+                let cipher = Aes256Cbc::new_from_slices(&user_info.secret_key, &iv).unwrap();
                 let mut encrypted_packet = cipher.encrypt_vec(&binary_packet);
 
                 // Prepare message len buffer.
-                let encrypted_message_len = encrypted_packet.len() as u16;
+                let encrypted_message_len = (encrypted_packet.len() + IV_LENGTH) as u16;
                 let encrypted_message_len_buf = bincode::serialize(&encrypted_message_len);
                 if let Err(e) = encrypted_message_len_buf {
                     println!(
@@ -104,6 +107,7 @@ impl UserTcpService {
                 }
                 let mut encrypted_message_len_buf = encrypted_message_len_buf.unwrap();
 
+                encrypted_message_len_buf.append(&mut iv);
                 encrypted_message_len_buf.append(&mut encrypted_packet);
 
                 loop {
@@ -236,10 +240,19 @@ impl UserTcpService {
                     };
                 }
 
+                // Get IV.
+                if encrypted_packet.len() < IV_LENGTH {
+                    return HandleStateResult::HandleStateErr(format!(
+                        "received data is too small, at [{}, {}].",
+                        file!(),
+                        line!()
+                    ));
+                }
+                let iv = &encrypted_packet[..IV_LENGTH].to_vec();
+                encrypted_packet = encrypted_packet[IV_LENGTH..].to_vec();
+
                 // Decrypt packet.
-                type Aes128Ecb = Ecb<Aes128, Pkcs7>;
-                let cipher =
-                    Aes128Ecb::new_from_slices(&user_info.secret_key, Default::default()).unwrap();
+                let cipher = Aes256Cbc::new_from_slices(&user_info.secret_key, &iv).unwrap();
                 let decrypted_packet = cipher.decrypt_vec(&encrypted_packet);
                 if let Err(e) = decrypted_packet {
                     return HandleStateResult::HandleStateErr(format!(
@@ -497,7 +510,7 @@ impl UserTcpService {
         let secret_key = b_open_big.modpow(&a, &p);
         let mut secret_key_str = secret_key.to_str_radix(10);
 
-        let key_length = 16;
+        let key_length = 32;
 
         if secret_key_str.len() < key_length {
             if secret_key_str.is_empty() {
@@ -553,9 +566,19 @@ impl UserTcpService {
             };
         }
 
+        // Get IV.
+        if encrypted_connect_packet.len() < IV_LENGTH {
+            return HandleStateResult::HandleStateErr(format!(
+                "received data is too small, at [{}, {}].",
+                file!(),
+                line!()
+            ));
+        }
+        let iv = &encrypted_connect_packet[..IV_LENGTH].to_vec();
+        encrypted_connect_packet = encrypted_connect_packet[IV_LENGTH..].to_vec();
+
         // Decrypt packet.
-        type Aes128Ecb = Ecb<Aes128, Pkcs7>;
-        let cipher = Aes128Ecb::new_from_slices(&user_info.secret_key, Default::default()).unwrap();
+        let cipher = Aes256Cbc::new_from_slices(&user_info.secret_key, &iv).unwrap();
         let decrypted_packet = cipher.decrypt_vec(&encrypted_connect_packet);
         if let Err(e) = decrypted_packet {
             return HandleStateResult::HandleStateErr(format!(
@@ -672,6 +695,7 @@ impl UserTcpService {
 
             // Prepare to send.
             let mut _encrypted_binary_packet = Vec::new();
+            let mut iv = vec![0u8; IV_LENGTH];
             loop {
                 let binary_server_connect_packet = bincode::serialize(&server_connect_packet);
                 if let Err(e) = binary_server_connect_packet {
@@ -684,12 +708,15 @@ impl UserTcpService {
                 let binary_server_connect_packet = binary_server_connect_packet.unwrap();
 
                 // Encrypt packet.
-                let cipher =
-                    Aes128Ecb::new_from_slices(&user_info.secret_key, Default::default()).unwrap();
+                let mut rng = rand::thread_rng();
+                rng.fill_bytes(&mut iv);
+                let cipher = Aes256Cbc::new_from_slices(&user_info.secret_key, &iv).unwrap();
                 let encrypted_binary_server_connect_packet =
                     cipher.encrypt_vec(&binary_server_connect_packet);
 
-                if encrypted_binary_server_connect_packet.len() + std::mem::size_of::<u64>()
+                if encrypted_binary_server_connect_packet.len()
+                    + IV_LENGTH
+                    + std::mem::size_of::<u64>()
                     > TCP_CONNECT_ANSWER_PACKET_MAX_SIZE as usize
                 {
                     // Let's say the server is full.
@@ -705,10 +732,11 @@ impl UserTcpService {
             }
 
             let mut send_buffer = Vec::new();
-            let packet_length = _encrypted_binary_packet.len() as u64;
+            let packet_length = (_encrypted_binary_packet.len() + IV_LENGTH) as u64;
             let mut packet_length = bincode::serialize(&packet_length).unwrap();
 
             send_buffer.append(&mut packet_length);
+            send_buffer.append(&mut iv);
             send_buffer.append(&mut _encrypted_binary_packet);
 
             loop {
@@ -768,16 +796,20 @@ impl UserTcpService {
 
             // Send info about new user.
             {
+                let mut rng = rand::thread_rng();
                 let mut users_guard = users.lock().unwrap();
                 for user in users_guard.iter_mut() {
                     // Encrypt packet.
-                    let cipher =
-                        Aes128Ecb::new_from_slices(&user.secret_key, Default::default()).unwrap();
+                    let mut iv = vec![0u8; IV_LENGTH];
+                    rng.fill_bytes(&mut iv);
+                    let cipher = Aes256Cbc::new_from_slices(&user.secret_key, &iv).unwrap();
                     let mut encrypted_binary_user_connected_packet =
                         cipher.encrypt_vec(&binary_user_connected_packet);
 
                     // Check packet length.
-                    if encrypted_binary_user_connected_packet.len() > TCP_PACKET_MAX_SIZE as usize {
+                    if encrypted_binary_user_connected_packet.len() + IV_LENGTH
+                        > TCP_PACKET_MAX_SIZE as usize
+                    {
                         // should never happen
                         return HandleStateResult::HandleStateErr(format!(
                             "Error: the packet size ({}) exceeds the limit ({}), at [{}, {}]",
@@ -787,12 +819,13 @@ impl UserTcpService {
                             line!()
                         ));
                     }
-                    let len = encrypted_binary_user_connected_packet.len() as u16;
+                    let len = (encrypted_binary_user_connected_packet.len() + IV_LENGTH) as u16;
                     let mut len_buf = bincode::serialize(&len).unwrap();
 
                     // Send.
                     let mut send_buf: Vec<u8> = Vec::new();
                     send_buf.append(&mut len_buf);
+                    send_buf.append(&mut iv);
                     send_buf.append(&mut encrypted_binary_user_connected_packet);
 
                     loop {
@@ -889,17 +922,18 @@ impl UserTcpService {
 
         // Send to all.
         {
+            let mut rng = rand::thread_rng();
             let mut users_guard = users.lock().unwrap();
             for user in users_guard.iter_mut() {
                 if user.room_name == user_info.room_name {
                     // Encrypt with user key.
-                    type Aes128Ecb = Ecb<Aes128, Pkcs7>;
-                    let cipher =
-                        Aes128Ecb::new_from_slices(&user.secret_key, Default::default()).unwrap();
+                    let mut iv = vec![0u8; IV_LENGTH];
+                    rng.fill_bytes(&mut iv);
+                    let cipher = Aes256Cbc::new_from_slices(&user.secret_key, &iv).unwrap();
                     let mut encrypted_packet = cipher.encrypt_vec(&binary_packet);
 
                     // Prepare message len buffer.
-                    let encrypted_message_len = encrypted_packet.len() as u16;
+                    let encrypted_message_len = (encrypted_packet.len() + IV_LENGTH) as u16;
                     let encrypted_message_len_buf = bincode::serialize(&encrypted_message_len);
                     if let Err(e) = encrypted_message_len_buf {
                         return HandleStateResult::HandleStateErr(format!(
@@ -911,6 +945,7 @@ impl UserTcpService {
                     }
                     let mut encrypted_message_len_buf = encrypted_message_len_buf.unwrap();
 
+                    encrypted_message_len_buf.append(&mut iv);
                     encrypted_message_len_buf.append(&mut encrypted_packet);
 
                     match self.write_to_socket(user, &mut encrypted_message_len_buf) {
@@ -1003,16 +1038,17 @@ impl UserTcpService {
 
         // Send to all.
         {
+            let mut rng = rand::thread_rng();
             let mut users_guard = users.lock().unwrap();
             for user in users_guard.iter_mut() {
                 // Encrypt with user key.
-                type Aes128Ecb = Ecb<Aes128, Pkcs7>;
-                let cipher =
-                    Aes128Ecb::new_from_slices(&user.secret_key, Default::default()).unwrap();
+                let mut iv = vec![0u8; IV_LENGTH];
+                rng.fill_bytes(&mut iv);
+                let cipher = Aes256Cbc::new_from_slices(&user.secret_key, &iv).unwrap();
                 let mut encrypted_packet = cipher.encrypt_vec(&binary_packet);
 
                 // Prepare len buffer.
-                let encrypted_len = encrypted_packet.len() as u16;
+                let encrypted_len = (encrypted_packet.len() + IV_LENGTH) as u16;
                 let encrypted_len_buf = bincode::serialize(&encrypted_len);
                 if let Err(e) = encrypted_len_buf {
                     return HandleStateResult::HandleStateErr(format!(
@@ -1024,6 +1060,7 @@ impl UserTcpService {
                 }
                 let mut encrypted_len_buf = encrypted_len_buf.unwrap();
 
+                encrypted_len_buf.append(&mut iv);
                 encrypted_len_buf.append(&mut encrypted_packet);
 
                 match self.write_to_socket(user, &mut encrypted_len_buf) {
@@ -1063,16 +1100,17 @@ impl UserTcpService {
 
         // Send to all.
         {
+            let mut rng = rand::thread_rng();
             let mut users_guard = users.lock().unwrap();
             for user in users_guard.iter_mut() {
                 // Encrypt with user key.
-                type Aes128Ecb = Ecb<Aes128, Pkcs7>;
-                let cipher =
-                    Aes128Ecb::new_from_slices(&user.secret_key, Default::default()).unwrap();
+                let mut iv = vec![0u8; IV_LENGTH];
+                rng.fill_bytes(&mut iv);
+                let cipher = Aes256Cbc::new_from_slices(&user.secret_key, &iv).unwrap();
                 let mut encrypted_packet = cipher.encrypt_vec(&binary_packet);
 
                 // Prepare message len buffer.
-                let encrypted_len = encrypted_packet.len() as u16;
+                let encrypted_len = (encrypted_packet.len() + IV_LENGTH) as u16;
                 let encrypted_len_buf = bincode::serialize(&encrypted_len);
                 if let Err(e) = encrypted_len_buf {
                     return HandleStateResult::HandleStateErr(format!(
@@ -1084,6 +1122,7 @@ impl UserTcpService {
                 }
                 let mut encrypted_len_buf = encrypted_len_buf.unwrap();
 
+                encrypted_len_buf.append(&mut iv);
                 encrypted_len_buf.append(&mut encrypted_packet);
 
                 match self.write_to_socket(user, &mut encrypted_len_buf) {

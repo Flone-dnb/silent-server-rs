@@ -11,6 +11,7 @@ pub const MAX_PASSWORD_SIZE: usize = 20;
 pub const SPAM_PROTECTION_SEC: usize = 2; // client can send only 1 message per SPAM_PROTECTION_SEC and can enter only 1 room per SPAM_PROTECTION_SEC
 pub const PASSWORD_RETRY_DELAY_SEC: usize = 5;
 pub const DEFAULT_ROOM_NAME: &str = "Lobby";
+pub const IV_LENGTH: usize = 16;
 
 pub const SERVER_DEFAULT_PORT: u16 = 51337;
 pub const NETWORK_PROTOCOL_VERSION: u64 = 0; // client with the same version is considered compatible

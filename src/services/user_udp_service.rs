@@ -1,8 +1,11 @@
 // External.
-use aes::Aes128;
+use aes::Aes256;
 use block_modes::block_padding::Pkcs7;
-use block_modes::{BlockMode, Ecb};
+use block_modes::{BlockMode, Cbc};
 use chrono::prelude::*;
+use rand::RngCore;
+
+type Aes256Cbc = Cbc<Aes256, Pkcs7>;
 
 // Std.
 use std::collections::LinkedList;
@@ -48,12 +51,14 @@ impl UserUdpService {
         let binary_packet = binary_packet.unwrap();
 
         // Encrypt with user key.
-        type Aes128Ecb = Ecb<Aes128, Pkcs7>;
-        let cipher = Aes128Ecb::new_from_slices(&self.secret_key, Default::default()).unwrap();
+        let mut rng = rand::thread_rng();
+        let mut iv = vec![0u8; IV_LENGTH];
+        rng.fill_bytes(&mut iv);
+        let cipher = Aes256Cbc::new_from_slices(&self.secret_key, &iv).unwrap();
         let mut encrypted_packet = cipher.encrypt_vec(&binary_packet);
 
         // Prepare len buffer.
-        let encrypted_len = encrypted_packet.len() as u16;
+        let encrypted_len = (encrypted_packet.len() + IV_LENGTH) as u16;
         let encrypted_len_buf = bincode::serialize(&encrypted_len);
         if let Err(e) = encrypted_len_buf {
             return Err(format!(
@@ -65,6 +70,7 @@ impl UserUdpService {
         }
         let mut encrypted_len_buf = encrypted_len_buf.unwrap();
 
+        encrypted_len_buf.append(&mut iv);
         encrypted_len_buf.append(&mut encrypted_packet);
 
         // Start timer.
@@ -115,8 +121,19 @@ impl UserUdpService {
             }
         }
 
+        // Get IV.
+        if recv_buffer.len() < IV_LENGTH {
+            return Err(format!(
+                "received data is too small, at [{}, {}].",
+                file!(),
+                line!()
+            ));
+        }
+        let iv = &recv_buffer[..IV_LENGTH].to_vec();
+        recv_buffer = recv_buffer[IV_LENGTH..].to_vec();
+
         // Decrypt.
-        let cipher = Aes128Ecb::new_from_slices(&self.secret_key, Default::default()).unwrap();
+        let cipher = Aes256Cbc::new_from_slices(&self.secret_key, &iv).unwrap();
         let decrypted_packet = cipher.decrypt_vec(&recv_buffer);
         if let Err(e) = decrypted_packet {
             return Err(format!("{:?}, at [{}, {}]", e, file!(), line!()));
@@ -169,6 +186,7 @@ impl UserUdpService {
         let binary_packet = binary_packet.unwrap();
 
         // Send ping to all + update user's ping in our list.
+        let mut rng = rand::thread_rng();
         let mut users_guard = users.lock().unwrap();
         for user in users_guard.iter_mut() {
             if user.username == self.username {
@@ -176,13 +194,13 @@ impl UserUdpService {
             }
             if user.udp_socket.is_some() {
                 // Encrypt with user key.
-                type Aes128Ecb = Ecb<Aes128, Pkcs7>;
-                let cipher =
-                    Aes128Ecb::new_from_slices(&user.secret_key, Default::default()).unwrap();
+                let mut iv = vec![0u8; IV_LENGTH];
+                rng.fill_bytes(&mut iv);
+                let cipher = Aes256Cbc::new_from_slices(&user.secret_key, &iv).unwrap();
                 let mut encrypted_packet = cipher.encrypt_vec(&binary_packet);
 
                 // Prepare len buffer.
-                let encrypted_len = encrypted_packet.len() as u16;
+                let encrypted_len = (encrypted_packet.len() + IV_LENGTH) as u16;
                 let encrypted_len_buf = bincode::serialize(&encrypted_len);
                 if let Err(e) = encrypted_len_buf {
                     return Err(format!(
@@ -194,6 +212,7 @@ impl UserUdpService {
                 }
                 let mut encrypted_len_buf = encrypted_len_buf.unwrap();
 
+                encrypted_len_buf.append(&mut iv);
                 encrypted_len_buf.append(&mut encrypted_packet);
 
                 match self.send(user.udp_socket.as_ref().unwrap(), &encrypted_len_buf) {
@@ -231,6 +250,7 @@ impl UserUdpService {
         let binary_packet = binary_packet.unwrap();
 
         // Send message to all.
+        let mut rng = rand::thread_rng();
         let mut users_guard = users.lock().unwrap();
         for user in users_guard.iter_mut() {
             if user.username == self.username {
@@ -238,13 +258,13 @@ impl UserUdpService {
             }
             if user.udp_socket.is_some() {
                 // Encrypt with user key.
-                type Aes128Ecb = Ecb<Aes128, Pkcs7>;
-                let cipher =
-                    Aes128Ecb::new_from_slices(&user.secret_key, Default::default()).unwrap();
+                let mut iv = vec![0u8; IV_LENGTH];
+                rng.fill_bytes(&mut iv);
+                let cipher = Aes256Cbc::new_from_slices(&user.secret_key, &iv).unwrap();
                 let mut encrypted_packet = cipher.encrypt_vec(&binary_packet);
 
                 // Prepare len buffer.
-                let encrypted_len = encrypted_packet.len() as u16;
+                let encrypted_len = (encrypted_packet.len() + IV_LENGTH) as u16;
                 let encrypted_len_buf = bincode::serialize(&encrypted_len);
                 if let Err(e) = encrypted_len_buf {
                     return Err(format!(
@@ -256,6 +276,7 @@ impl UserUdpService {
                 }
                 let mut encrypted_len_buf = encrypted_len_buf.unwrap();
 
+                encrypted_len_buf.append(&mut iv);
                 encrypted_len_buf.append(&mut encrypted_packet);
 
                 match self.send(user.udp_socket.as_ref().unwrap(), &encrypted_len_buf) {
@@ -315,9 +336,19 @@ impl UserUdpService {
             }
         }
 
+        // Get IV.
+        if recv_buffer.len() < IV_LENGTH {
+            return Err(format!(
+                "received data is too small, at [{}, {}].",
+                file!(),
+                line!()
+            ));
+        }
+        let iv = &recv_buffer[..IV_LENGTH].to_vec();
+        recv_buffer = recv_buffer[IV_LENGTH..].to_vec();
+
         // Decrypt.
-        type Aes128Ecb = Ecb<Aes128, Pkcs7>;
-        let cipher = Aes128Ecb::new_from_slices(&self.secret_key, Default::default()).unwrap();
+        let cipher = Aes256Cbc::new_from_slices(&self.secret_key, &iv).unwrap();
         let decrypted_packet = cipher.decrypt_vec(&recv_buffer);
         if let Err(e) = decrypted_packet {
             return Err(format!("{:?}, at [{}, {}]", e, file!(), line!()));
@@ -365,12 +396,14 @@ impl UserUdpService {
         let binary_packet = binary_packet.unwrap();
 
         // Encrypt with user key.
-        type Aes128Ecb = Ecb<Aes128, Pkcs7>;
-        let cipher = Aes128Ecb::new_from_slices(&self.secret_key, Default::default()).unwrap();
+        let mut rng = rand::thread_rng();
+        let mut iv = vec![0u8; IV_LENGTH];
+        rng.fill_bytes(&mut iv);
+        let cipher = Aes256Cbc::new_from_slices(&self.secret_key, &iv).unwrap();
         let mut encrypted_packet = cipher.encrypt_vec(&binary_packet);
 
         // Prepare len buffer.
-        let encrypted_len = encrypted_packet.len() as u16;
+        let encrypted_len = (encrypted_packet.len() + IV_LENGTH) as u16;
         let encrypted_len_buf = bincode::serialize(&encrypted_len);
         if let Err(e) = encrypted_len_buf {
             return Err(format!(
@@ -382,6 +415,7 @@ impl UserUdpService {
         }
         let mut encrypted_len_buf = encrypted_len_buf.unwrap();
 
+        encrypted_len_buf.append(&mut iv);
         encrypted_len_buf.append(&mut encrypted_packet);
 
         // Start timer.
