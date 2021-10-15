@@ -3,6 +3,7 @@ use aes::Aes256;
 use block_modes::block_padding::Pkcs7;
 use block_modes::{BlockMode, Cbc};
 use chrono::prelude::*;
+use cmac::{Cmac, Mac, NewMac};
 use num_bigint::{BigUint, RandomBits};
 use rand::{Rng, RngCore};
 
@@ -84,7 +85,25 @@ impl UserTcpService {
                     );
                     return Err(());
                 }
-                let binary_packet = binary_packet.unwrap();
+                let mut binary_packet = binary_packet.unwrap();
+
+                // CMAC.
+                let mut mac = Cmac::<Aes256>::new_from_slice(&user_info.secret_key).unwrap();
+                mac.update(&binary_packet);
+                let result = mac.finalize();
+                let mut tag_bytes = result.into_bytes().to_vec();
+                if tag_bytes.len() != CMAC_TAG_LENGTH {
+                    println!(
+                        "unexpected tag length: {} != {} at [{}, {}]",
+                        tag_bytes.len(),
+                        CMAC_TAG_LENGTH,
+                        file!(),
+                        line!()
+                    );
+                    return Err(());
+                }
+
+                binary_packet.append(&mut tag_bytes);
 
                 // Encrypt with user key.
                 let mut rng = rand::thread_rng();
@@ -262,7 +281,22 @@ impl UserTcpService {
                         line!()
                     ));
                 }
-                let decrypted_packet = decrypted_packet.unwrap();
+                let mut decrypted_packet = decrypted_packet.unwrap();
+
+                // CMAC
+                let mut mac = Cmac::<Aes256>::new_from_slice(&user_info.secret_key).unwrap();
+                let tag: Vec<u8> = decrypted_packet
+                    .drain(decrypted_packet.len().saturating_sub(CMAC_TAG_LENGTH)..)
+                    .collect();
+                mac.update(&decrypted_packet);
+                if let Err(e) = mac.verify(&tag) {
+                    return HandleStateResult::HandleStateErr(format!(
+                        "Incorrect tag (error: {}), at [{}, {}].",
+                        e,
+                        file!(),
+                        line!()
+                    ));
+                }
 
                 // Deserialize packet.
                 let user_packet = bincode::deserialize::<ClientTcpMessage>(&decrypted_packet);
@@ -588,7 +622,24 @@ impl UserTcpService {
                 line!()
             ));
         }
-        let decrypted_packet = decrypted_packet.unwrap();
+        let mut decrypted_packet = decrypted_packet.unwrap();
+
+        // CMAC
+        let mut mac = Cmac::<Aes256>::new_from_slice(&user_info.secret_key).unwrap();
+        let tag: Vec<u8> = decrypted_packet
+            .drain(decrypted_packet.len().saturating_sub(CMAC_TAG_LENGTH)..)
+            .collect();
+        mac.update(&decrypted_packet);
+        if let Err(e) = mac.verify(&tag) {
+            return HandleStateResult::HandleStateErr(format!(
+                "Incorrect tag (error: {}), at [{}, {}].",
+                e,
+                file!(),
+                line!()
+            ));
+        }
+
+        // Deserialize.
         let connect_packet = bincode::deserialize::<ClientConnectPacket>(&decrypted_packet);
         if let Err(e) = connect_packet {
             return HandleStateResult::HandleStateErr(format!(
@@ -705,7 +756,24 @@ impl UserTcpService {
                 ));
                 }
 
-                let binary_server_connect_packet = binary_server_connect_packet.unwrap();
+                let mut binary_server_connect_packet = binary_server_connect_packet.unwrap();
+
+                // CMAC.
+                let mut mac = Cmac::<Aes256>::new_from_slice(&user_info.secret_key).unwrap();
+                mac.update(&binary_server_connect_packet);
+                let result = mac.finalize();
+                let mut tag_bytes = result.into_bytes().to_vec();
+                if tag_bytes.len() != CMAC_TAG_LENGTH {
+                    return HandleStateResult::HandleStateErr(format!(
+                        "unexpected tag length: {} != {} at [{}, {}]",
+                        tag_bytes.len(),
+                        CMAC_TAG_LENGTH,
+                        file!(),
+                        line!()
+                    ));
+                }
+
+                binary_server_connect_packet.append(&mut tag_bytes);
 
                 // Encrypt packet.
                 let mut rng = rand::thread_rng();
@@ -799,6 +867,24 @@ impl UserTcpService {
                 let mut rng = rand::thread_rng();
                 let mut users_guard = users.lock().unwrap();
                 for user in users_guard.iter_mut() {
+                    // CMAC.
+                    let mut mac = Cmac::<Aes256>::new_from_slice(&user.secret_key).unwrap();
+                    mac.update(&binary_user_connected_packet);
+                    let result = mac.finalize();
+                    let mut tag_bytes = result.into_bytes().to_vec();
+                    if tag_bytes.len() != CMAC_TAG_LENGTH {
+                        return HandleStateResult::HandleStateErr(format!(
+                            "unexpected tag length: {} != {} at [{}, {}]",
+                            tag_bytes.len(),
+                            CMAC_TAG_LENGTH,
+                            file!(),
+                            line!()
+                        ));
+                    }
+
+                    let mut binary_user_connected_packet = binary_user_connected_packet.clone();
+                    binary_user_connected_packet.append(&mut tag_bytes);
+
                     // Encrypt packet.
                     let mut iv = vec![0u8; IV_LENGTH];
                     rng.fill_bytes(&mut iv);
@@ -926,6 +1012,24 @@ impl UserTcpService {
             let mut users_guard = users.lock().unwrap();
             for user in users_guard.iter_mut() {
                 if user.room_name == user_info.room_name {
+                    // CMAC.
+                    let mut mac = Cmac::<Aes256>::new_from_slice(&user.secret_key).unwrap();
+                    mac.update(&binary_packet);
+                    let result = mac.finalize();
+                    let mut tag_bytes = result.into_bytes().to_vec();
+                    if tag_bytes.len() != CMAC_TAG_LENGTH {
+                        return HandleStateResult::HandleStateErr(format!(
+                            "unexpected tag length: {} != {} at [{}, {}]",
+                            tag_bytes.len(),
+                            CMAC_TAG_LENGTH,
+                            file!(),
+                            line!()
+                        ));
+                    }
+
+                    let mut binary_packet = binary_packet.clone();
+                    binary_packet.append(&mut tag_bytes);
+
                     // Encrypt with user key.
                     let mut iv = vec![0u8; IV_LENGTH];
                     rng.fill_bytes(&mut iv);
@@ -1041,6 +1145,24 @@ impl UserTcpService {
             let mut rng = rand::thread_rng();
             let mut users_guard = users.lock().unwrap();
             for user in users_guard.iter_mut() {
+                // CMAC.
+                let mut mac = Cmac::<Aes256>::new_from_slice(&user.secret_key).unwrap();
+                mac.update(&binary_packet);
+                let result = mac.finalize();
+                let mut tag_bytes = result.into_bytes().to_vec();
+                if tag_bytes.len() != CMAC_TAG_LENGTH {
+                    return HandleStateResult::HandleStateErr(format!(
+                        "unexpected tag length: {} != {} at [{}, {}]",
+                        tag_bytes.len(),
+                        CMAC_TAG_LENGTH,
+                        file!(),
+                        line!()
+                    ));
+                }
+
+                let mut binary_packet = binary_packet.clone();
+                binary_packet.append(&mut tag_bytes);
+
                 // Encrypt with user key.
                 let mut iv = vec![0u8; IV_LENGTH];
                 rng.fill_bytes(&mut iv);
@@ -1103,6 +1225,24 @@ impl UserTcpService {
             let mut rng = rand::thread_rng();
             let mut users_guard = users.lock().unwrap();
             for user in users_guard.iter_mut() {
+                // CMAC.
+                let mut mac = Cmac::<Aes256>::new_from_slice(&user.secret_key).unwrap();
+                mac.update(&binary_packet);
+                let result = mac.finalize();
+                let mut tag_bytes = result.into_bytes().to_vec();
+                if tag_bytes.len() != CMAC_TAG_LENGTH {
+                    return HandleStateResult::HandleStateErr(format!(
+                        "unexpected tag length: {} != {} at [{}, {}]",
+                        tag_bytes.len(),
+                        CMAC_TAG_LENGTH,
+                        file!(),
+                        line!()
+                    ));
+                }
+
+                let mut binary_packet = binary_packet.clone();
+                binary_packet.append(&mut tag_bytes);
+
                 // Encrypt with user key.
                 let mut iv = vec![0u8; IV_LENGTH];
                 rng.fill_bytes(&mut iv);
