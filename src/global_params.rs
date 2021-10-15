@@ -15,7 +15,7 @@ pub const IV_LENGTH: usize = 16;
 pub const CMAC_TAG_LENGTH: usize = 16;
 
 pub const SERVER_DEFAULT_PORT: u16 = 51337;
-pub const NETWORK_PROTOCOL_VERSION: u64 = 0; // client with the same version is considered compatible
+pub const NETWORK_PROTOCOL_VERSION: u64 = 1; // client with the same version is considered compatible
 
 pub const INTERVAL_TCP_IDLE_MS: u64 = 250;
 pub const INTERVAL_TCP_MESSAGE_MS: u64 = 10;
