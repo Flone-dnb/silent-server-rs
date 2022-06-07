@@ -15,6 +15,8 @@ use super::user_udp_service::*;
 use crate::config_io::*;
 use crate::global_params::*;
 
+pub const SECRET_KEY_SIZE: usize = 32;
+
 pub struct UserInfo {
     pub username: String,
     pub room_name: String,
@@ -25,7 +27,7 @@ pub struct UserInfo {
     pub tcp_io_mutex: Arc<Mutex<()>>,
     pub last_text_message_sent: DateTime<Local>,
     pub last_time_entered_room: DateTime<Local>,
-    pub secret_key: Vec<u8>,
+    pub secret_key: [u8; SECRET_KEY_SIZE],
 }
 impl UserInfo {
     pub fn clone(&self) -> Result<UserInfo, String> {
@@ -55,7 +57,6 @@ impl UserInfo {
 
 pub enum BanReason {
     WrongPassword,
-    Spam,
 }
 
 pub struct BannedAddress {
@@ -174,7 +175,7 @@ impl NetService {
                         .collect::<Vec<BannedAddress>>(),
                 );
 
-                // find addr
+                // Find address.
                 let addr_entry = banned_addrs_guard
                     .as_ref()
                     .unwrap()
@@ -216,7 +217,7 @@ impl NetService {
                 tcp_io_mutex: Arc::new(Mutex::new(())),
                 last_text_message_sent: Local::now(),
                 last_time_entered_room: Local::now(),
-                secret_key: Vec::new(),
+                secret_key: [0; SECRET_KEY_SIZE],
             };
 
             let logger_copy = Arc::clone(&self.logger);
@@ -258,7 +259,16 @@ impl NetService {
 
         match user_tcp_service.establish_secure_connection(&mut user_info) {
             Ok(key) => {
-                user_info.secret_key = key;
+                let result = key.try_into();
+                if result.is_err() {
+                    println!(
+                        "failed to convert Vec<u8> to generic array at [{}, {}]",
+                        file!(),
+                        line!()
+                    );
+                    return;
+                }
+                user_info.secret_key = result.unwrap();
             }
             Err(_) => {
                 // failed
@@ -435,7 +445,7 @@ impl NetService {
         users: Arc<Mutex<LinkedList<UserInfo>>>,
         tcp_listen: Arc<Mutex<mpsc::Receiver<()>>>,
         user_connect_disconnect_server_lock: Arc<Mutex<()>>,
-        secret_key: Vec<u8>,
+        secret_key: [u8; SECRET_KEY_SIZE],
     ) {
         let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP));
         if let Err(e) = socket {
@@ -521,7 +531,7 @@ impl NetService {
                 None => {
                     {
                         if tcp_listen.lock().unwrap().try_recv().is_ok() {
-                            // tcp thread ended, finish this thread
+                            // TCP thread ended, finish this thread.
                             return;
                         }
                     }
