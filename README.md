@@ -4,8 +4,6 @@ Silent Server is a cross-platform command-line tool for hosting Silent Server.
 
 Must be used with the [Silent Client](https://github.com/Flone-dnb/silent-rs) application.
 
-**Project status**: maintenance mode (no new features, only critical fixes).
-
 # How to use
 
 ```
